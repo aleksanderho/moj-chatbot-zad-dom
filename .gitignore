@@ -1,0 +1,12 @@
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+.env*
+!.env.example
+.vercel/
+*.pem
+*.key
+*.p12
+*.pfx
+*.log
