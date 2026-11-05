@@ -37,10 +37,11 @@ const requestSchema = z.object({
   messages: z.array(z.object({
     id: z.string().min(1),
     role: z.enum(["user", "assistant"]),
-    parts: z.array(z.object({
-      type: z.literal("text"),
-      text: z.string(),
-    })).min(1),
+    parts: z.array(z.discriminatedUnion("type", [
+      z.object({ type: z.literal("text"), text: z.string() }),
+      z.object({ type: z.literal("step-start") }),
+      z.object({ type: z.literal("reasoning"), text: z.string() }),
+    ])).min(1).transform((parts) => parts.filter((part) => part.type === "text")),
   })).min(1),
 });
 

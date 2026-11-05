@@ -14,6 +14,9 @@ function errorMessage(error: Error) {
   if (error.message.startsWith("Brak konfiguracji.")) {
     return "Brak konfiguracji. Uzupełnij OPENROUTER_API_KEY i OPENROUTER_MODEL w pliku .env.local.";
   }
+  if (error.message === "Nieprawidłowa historia rozmowy." || error.message === "Wpisz wiadomość przed wysłaniem.") {
+    return error.message;
+  }
   return "Nie udało się uzyskać odpowiedzi AI. Sprawdź połączenie, klucz, model i saldo OpenRouter. Spróbuj ponownie.";
 }
 

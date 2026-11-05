@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { POST } from "../app/api/chat/route.ts";
+import { Chat } from "@ai-sdk/react";
+import { DefaultChatTransport } from "ai";
 
 const user = (text, id = "u1") => ({ id, role: "user", parts: [{ type: "text", text }] });
 const request = (messages) => new Request("http://localhost/api/chat", {
@@ -36,13 +38,14 @@ test("konfiguracja, walidacja, historia i strumień bez połączeń z modelem", 
       id: "a1", role: "assistant", parts: [{ type: "text", text: "Cześć, Olu!" }],
     }, user("Jak mam na imię?", "u2")];
 
+    const sentHistories = [];
     globalThis.fetch = async (_url, options) => {
       calls++;
       const body = JSON.parse(options.body);
       assert.equal(body.model, "test/model");
       assert.equal(body.stream, true);
-      assert.deepEqual(body.messages.map(({ role }) => role), ["user", "assistant", "user"]);
-      assert.match(JSON.stringify(body.messages), /Mam na imię Ola/);
+      sentHistories.push(body.messages);
+      assert.ok(body.messages.some((message) => message.role === "user"));
       const encoder = new TextEncoder();
       return new Response(new ReadableStream({
         async start(controller) {
@@ -68,6 +71,23 @@ test("konfiguracja, walidacja, historia i strumień bez połączeń z modelem", 
     assert.match(output, /Masz /);
     assert.match(output, /na imię Ola/);
     assert.equal(calls, 1);
+    assert.deepEqual(sentHistories[0].map(({ role }) => role), ["user", "assistant", "user"]);
+    assert.match(JSON.stringify(sentHistories[0]), /Mam na imię Ola/);
+
+    const chat = new Chat({
+      transport: new DefaultChatTransport({
+        api: "http://localhost/api/chat",
+        fetch: async (url, options) => POST(new Request(url, options)),
+      }),
+    });
+    await chat.sendMessage({ text: "Mam na imię Ola." });
+    assert.equal(chat.status, "ready");
+    assert.ok(chat.messages[1].parts.some((part) => part.type === "step-start"));
+    await chat.sendMessage({ text: "Jak mam na imię?" });
+    assert.equal(chat.status, "ready", chat.error?.message);
+    assert.equal(chat.messages.length, 4);
+    assert.deepEqual(sentHistories.at(-1).map(({ role }) => role), ["user", "assistant", "user"]);
+    assert.match(JSON.stringify(sentHistories.at(-1)), /Mam na imię Ola/);
 
     for (const code of [400, 401, 402, 403, 404, 429, 502, 503]) {
       globalThis.fetch = async () => new Response(JSON.stringify({
