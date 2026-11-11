@@ -1,6 +1,8 @@
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import { APICallError, convertToModelMessages, streamText } from "ai";
 import { z } from "zod";
+import { exampleMessages } from "./chat-instructions.mjs";
+import { systemPrompt } from "./instructions.mjs";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -34,6 +36,8 @@ function providerErrorMessage(error: unknown): string {
 
 // This chat accepts only text from the user and the previous assistant replies.
 const requestSchema = z.object({
+  stepByStep: z.boolean().default(false),
+  mode: z.literal("chat").default("chat"),
   messages: z.array(z.object({
     id: z.string().min(1),
     role: z.enum(["user", "assistant"]),
@@ -70,7 +74,8 @@ export async function POST(request: Request) {
     const openrouter = createOpenRouter({ apiKey });
     const result = streamText({
       model: openrouter(model),
-      messages: await convertToModelMessages(messages),
+      system: systemPrompt(parsed.data.stepByStep),
+      messages: [...exampleMessages, ...await convertToModelMessages(messages)],
       abortSignal: request.signal,
       maxRetries: 0,
       // Do not log provider errors, which may contain request details.
@@ -78,6 +83,7 @@ export async function POST(request: Request) {
     });
 
     return result.toUIMessageStreamResponse({
+      sendReasoning: false,
       onError: providerErrorMessage,
     });
   } catch (error) {

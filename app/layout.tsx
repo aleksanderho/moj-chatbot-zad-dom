@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Mój chatbot z odpowiedzią strumieniową",
+  title: "Mój pierwszy chatbot",
   description: "Mój pierwszy chatbot",
 };
 
