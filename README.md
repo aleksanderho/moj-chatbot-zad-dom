@@ -265,3 +265,20 @@ ustaw `OPENROUTER_API_KEY` i `OPENROUTER_MODEL` dla Production.
 Klucz wpisz bezpośrednio w Vercel, nigdy w repozytorium.
 Polecenie budowania: `npm run build`; katalog główny projektu: `./`.
 Po zmianie zmiennych wykonaj nowy deployment.
+
+## Misja podróży
+
+Strona `/dashboard` działa bez hasła (zgodnie z wybranym ustawieniem). Zakładki: Zwykły tekst, Analiza JSON, Misja podróży.
+Nowy endpoint `/api/travel` wymaga podpisanej sesji anonimowej, tworzonej przez `/api/travel/session`. To sesja techniczna, a nie logowanie ani ograniczenie dostępu do dashboardu.
+
+Karty korzystają ze wspólnych narzędzi w `app/api/chat/tools.mjs`: Open-Meteo, NBP, Nager.Date, Wikipedia i zegar serwera z bazą stref IANA. Wybrany termin dotyczy pogody i najbliższych świąt; kursy oraz różnica czasu są aktualne w chwili pobrania. Prognoza obejmuje najbliższe 16 dni. Odśwież ponawia wszystkie zapytania. Niepowodzenie pojedynczego źródła zostaje pokazane na jego karcie.
+
+Podsumowanie wykorzystuje skonfigurowany model OpenRouter. Jeżeli model jest niedostępny, strona pokazuje oznaczone wskazówki na podstawie danych, zachowując pięć kart.
+
+Powiązanie kraju z walutami: snapshot Unicode CLDR pobrany 2026-11-15 z https://github.com/unicode-org/cldr-json/blob/main/cldr-json/cldr-core/supplemental/currencyData.json, licencja w `app/country-currencies.LICENSE.txt`. Nowych bibliotek nie dodano.
+
+### Wdrożenie na Vercel
+
+W ustawieniach projektu Vercel ustaw `OPENROUTER_API_KEY` oraz `OPENROUTER_MODEL` dla środowiska Production. Opcjonalny `TRAVEL_SESSION_SECRET` pozwala używać osobnego sekretu sesji; bez niego podpis jest wyprowadzany z klucza OpenRouter. Sekret jest stały między instancjami funkcji, a jego wartości nie trafiają do przeglądarki. Plik `.env.local` nie jest wysyłany do GitHub. Dashboard pozostaje bez hasła, zgodnie z wybranym ustawieniem.
+
+Zmiany wysłane na produkcyjną gałąź repozytorium uruchamiają wdrożenie, jeśli projekt Vercel jest połączony z tym repozytorium. Notatki pozostają tymczasowe i mogą różnić się między instancjami serwera — trwały zapis wymaga bazy danych.

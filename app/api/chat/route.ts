@@ -1,5 +1,9 @@
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
-import { APICallError, convertToModelMessages, streamText } from "ai";
+import { APICallError, convertToModelMessages, createUIMessageStreamResponse, streamText, stepCountIs } from "ai";
+import { withLimitSummary } from "./agent-loop.mjs";
+import { createTaskBudget } from "./task-budget.mjs";
+import { randomUUID } from "node:crypto";
+import { createTools, STEP_LIMIT } from "./tools.mjs";
 import { z } from "zod";
 import { exampleMessages } from "./chat-instructions.mjs";
 import { systemPrompt } from "./instructions.mjs";
@@ -34,22 +38,25 @@ function providerErrorMessage(error: unknown): string {
   }
 }
 
-// This chat accepts only text from the user and the previous assistant replies.
+// Accept tool UI parts on subsequent turns, but never trust client tool results.
+// Only text is forwarded; current-turn results come directly from server tools.
 const requestSchema = z.object({
   stepByStep: z.boolean().default(false),
   mode: z.literal("chat").default("chat"),
   messages: z.array(z.object({
     id: z.string().min(1),
     role: z.enum(["user", "assistant"]),
-    parts: z.array(z.discriminatedUnion("type", [
+    parts: z.array(z.union([
       z.object({ type: z.literal("text"), text: z.string() }),
       z.object({ type: z.literal("step-start") }),
       z.object({ type: z.literal("reasoning"), text: z.string() }),
-    ])).min(1).transform((parts) => parts.filter((part) => part.type === "text")),
+      z.object({ type: z.string().refine((value) => value.startsWith("tool-") || value === "dynamic-tool" || value === "source-url") }),
+    ])).min(1).transform((parts) => parts.filter((part): part is { type: "text"; text: string } => part.type === "text" && "text" in part)),
   })).min(1),
 });
 
 export async function POST(request: Request) {
+  const started = performance.now();
   const apiKey = process.env.OPENROUTER_API_KEY?.trim();
   const model = process.env.OPENROUTER_MODEL?.trim();
 
@@ -72,19 +79,32 @@ export async function POST(request: Request) {
 
   try {
     const openrouter = createOpenRouter({ apiKey });
+    const existingOwner = request.headers.get("cookie")?.match(/(?:^|;\s*)chat_notes=([a-f0-9-]{36})(?:;|$)/)?.[1];
+    const owner = existingOwner ?? randomUUID();
+    const budget = createTaskBudget({ signal: request.signal, timeoutMs: Math.max(1, 60000 - (performance.now() - started)) });
+    const tools = createTools({ model, owner, signal: budget.signal, budget });
     const result = streamText({
       model: openrouter(model),
       system: systemPrompt(parsed.data.stepByStep),
+      tools,
+      stopWhen: [stepCountIs(STEP_LIMIT), () => Boolean(budget.reason)],
+      prepareStep: () => { budget.steps++; return {}; },
+      onStepFinish: ({ toolResults, toolCalls }) => {
+        if (toolCalls.length > toolResults.length && !budget.reason) budget.fail("Nie udało się poprawnie wykonać wywołania narzędzia.");
+      },
       messages: [...exampleMessages, ...await convertToModelMessages(messages)],
-      abortSignal: request.signal,
+      abortSignal: budget.signal,
       maxRetries: 0,
       // Do not log provider errors, which may contain request details.
       onError: () => {},
     });
 
-    return result.toUIMessageStreamResponse({
-      sendReasoning: false,
-      onError: providerErrorMessage,
+    return createUIMessageStreamResponse({
+      headers: existingOwner ? {} : { "Set-Cookie": `chat_notes=${owner}; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400${new URL(request.url).protocol === "https:" ? "; Secure" : ""}` },
+      stream: result.toUIMessageStream({
+        sendReasoning: false,
+        onError: providerErrorMessage,
+      }).pipeThrough(withLimitSummary(budget)),
     });
   } catch (error) {
     return new Response(providerErrorMessage(error), { status: 500 });
