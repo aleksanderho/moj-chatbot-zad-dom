@@ -4,7 +4,7 @@ import { Chat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
 import { POST } from "../app/api/chat/route.ts";
 
-test("narzędzia w strumieniu, wynik dla modelu, kolejna wiadomość i limit 6 kroków", async () => {
+test("narzędzia w strumieniu, wynik dla modelu, kolejna wiadomość i limit 5 kroków", async () => {
   process.env.OPENROUTER_API_KEY = "test-key";
   process.env.OPENROUTER_MODEL = "test/model";
   const previous = globalThis.fetch;
@@ -39,21 +39,21 @@ test("narzędzia w strumieniu, wynik dla modelu, kolejna wiadomość i limit 6 k
     calls = 0;
     const response = await POST(new Request("http://localhost/api/chat", { method: "POST", body: JSON.stringify({ messages: [{ id: "u1", role: "user", parts: [{ type: "text", text: "Licz dalej" }] }] }) }));
     const stream = await response.text();
-    assert.equal(calls, 6);
-    assert.match(stream, /Zatrzymałem się po 6 krokach/);
+    assert.equal(calls, 5);
+    assert.match(stream, /Zatrzymałem się po 5 krokach/);
     assert.match(stream, /wynik/);
     assert.match(stream, /36/);
-    assert.equal((stream.match(/"type":"start-step"/g) ?? []).length, 6);
+    assert.equal((stream.match(/"type":"start-step"/g) ?? []).length, 5);
     assert.match(response.headers.get("set-cookie"), /HttpOnly; SameSite=Strict/);
     calls = 0;
     const limitedChat = new Chat({ transport: new DefaultChatTransport({ api: "http://localhost/api/chat", fetch: async (url, options) => POST(new Request(url, options)) }) });
     await limitedChat.sendMessage({ text: "Licz dalej" });
     assert.equal(limitedChat.status, "ready", limitedChat.error?.message);
-    assert.equal(calls, 6);
+    assert.equal(calls, 5);
     const parts = limitedChat.messages[1].parts;
-    assert.equal(parts.filter(p => p.type === "step-start").length, 6);
-    assert.equal(parts.filter(p => p.type === "tool-kalkulator").length, 6);
-    assert.ok(parts.some(p => p.type === "text" && p.text.includes("Zatrzymałem się po 6 krokach") && p.text.includes("36")));
+    assert.equal(parts.filter(p => p.type === "step-start").length, 5);
+    assert.equal(parts.filter(p => p.type === "tool-kalkulator").length, 5);
+    assert.ok(parts.some(p => p.type === "text" && p.text.includes("Zatrzymałem się po 5 krokach") && p.text.includes("36")));
     calls = 0;
     repeat = false;
     await limitedChat.sendMessage({ text: "Dziękuję" });

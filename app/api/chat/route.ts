@@ -82,7 +82,10 @@ export async function POST(request: Request) {
     const existingOwner = request.headers.get("cookie")?.match(/(?:^|;\s*)chat_notes=([a-f0-9-]{36})(?:;|$)/)?.[1];
     const owner = existingOwner ?? randomUUID();
     const budget = createTaskBudget({ signal: request.signal, timeoutMs: Math.max(1, 60000 - (performance.now() - started)) });
-    const tools = createTools({ model, owner, signal: budget.signal, budget });
+    const tools = {
+      ...createTools({ model, owner, signal: budget.signal, budget }),
+      webSearch: openrouter.tools.webSearch({ maxResults: 3, engine: "native" }),
+    };
     const result = streamText({
       model: openrouter(model),
       system: systemPrompt(parsed.data.stepByStep),
@@ -90,7 +93,8 @@ export async function POST(request: Request) {
       stopWhen: [stepCountIs(STEP_LIMIT), () => Boolean(budget.reason)],
       prepareStep: () => { budget.steps++; return {}; },
       onStepFinish: ({ toolResults, toolCalls }) => {
-        if (toolCalls.length > toolResults.length && !budget.reason) budget.fail("Nie udało się poprawnie wykonać wywołania narzędzia.");
+        const pendingLocal = toolCalls.filter(call => !call.providerExecuted && !toolResults.some(result => result.toolCallId === call.toolCallId));
+        if (pendingLocal.length > 0 && !budget.reason) budget.fail("Nie udało się poprawnie wykonać wywołania narzędzia.");
       },
       messages: [...exampleMessages, ...await convertToModelMessages(messages)],
       abortSignal: budget.signal,
@@ -102,6 +106,7 @@ export async function POST(request: Request) {
     return createUIMessageStreamResponse({
       headers: existingOwner ? {} : { "Set-Cookie": `chat_notes=${owner}; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400${new URL(request.url).protocol === "https:" ? "; Secure" : ""}` },
       stream: result.toUIMessageStream({
+        sendSources: true,
         sendReasoning: false,
         onError: providerErrorMessage,
       }).pipeThrough(withLimitSummary(budget)),

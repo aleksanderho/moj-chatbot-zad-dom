@@ -3,13 +3,28 @@ import { z } from "zod";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { TOOL_TIMEOUT_MS, withinSignal } from "./task-budget.mjs";
 
-export const STEP_LIMIT = 6;
+export const STEP_LIMIT = 5;
 const memory = new Map();
 const text = z.string().trim().min(1).max(160);
 const number = z.number().finite();
 const date = z.iso.date();
 const stamp = () => new Date().toISOString();
 const fail = (message) => ({ ok: false, message });
+
+export function aktualnyCzas(now = new Date()) {
+  const strefa = "Europe/Warsaw";
+  const parts = new Intl.DateTimeFormat("pl-PL", {
+    timeZone: strefa, year: "numeric", month: "2-digit", day: "2-digit",
+    weekday: "long", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23",
+  }).formatToParts(now);
+  const value = type => parts.find(part => part.type === type).value;
+  return {
+    strefa,
+    data: `${value("year")}-${value("month")}-${value("day")}`,
+    dzienTygodnia: value("weekday"),
+    godzina: `${value("hour")}:${value("minute")}:${value("second")}`,
+  };
+}
 
 // Shared by the agent and the travel dashboard.
 export async function resolveCity(miasto, { kraj, signal, fetcher = fetch } = {}) {
@@ -63,6 +78,7 @@ export function createTools({ model, owner, signal, fetcher = fetch, budget, too
     } });
   }
   const tools = {
+    aktualnyCzas: define("Sprawdź dzisiejszą datę, dzień tygodnia i aktualną godzinę w Polsce (Europe/Warsaw). Użyj przy pytaniach o teraz, dziś, jutro, wczoraj lub za ile dni oraz przed obliczaniem terminów względem dzisiejszej daty. Nie zgaduj bieżącej daty. Narzędzie nie przyjmuje argumentów; daty względne wylicz na podstawie jego wyniku.", z.object({}), async () => aktualnyCzas()),
     pogoda: define("Sprawdź prognozę dla miasta i dnia YYYY-MM-DD. Najpierw ustal datę narzędziem czas, jeśli jest względna. Prognoza obejmuje najbliższe 16 dni; nie zgaduj poza zakresem. Opcjonalnie podaj kod kraju, aby rozróżnić miasta.", z.object({ miasto: text, dzien: date, kraj: z.string().regex(/^[A-Za-z]{2}$/).optional() }), async ({ miasto, dzien, kraj }) => {
       const place = await resolveCity(miasto, { kraj, signal: invocation.getStore(), fetcher });
       if (!place) return fail("Nie znaleziono miasta. Podaj pełną nazwę i kod kraju.");

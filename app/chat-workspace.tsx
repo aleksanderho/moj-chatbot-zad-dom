@@ -48,18 +48,19 @@ export function ChatPanel({ mode, active }: { mode: Mode; active: boolean }) {
       <div className="conversation" role="log" aria-label={mode === "chat" ? "Rozmowa" : "Analiza JSON"} aria-live="polite" tabIndex={0}>
         {messages.length === 0 && <div className="welcome"><span className="welcome-mark" aria-hidden="true">i.</span><p className="eyebrow">Twój asystent i-sofa</p><h2>Porozmawiajmy o wygodzie.</h2><p>Zapytaj o sofy, wybór mebli lub ofertę sklepu.<br />W czym mogę Ci dzisiaj pomóc?</p></div>}
         {messages.map((item) => {
-          let step = 0;
-          const usedTools: { step: number; name: string }[] = [];
+          const sources = item.parts.filter(part => part.type === "source-url" && /^https?:\/\//i.test(part.url));
+          const usedTools = new Set<string>();
           for (const part of item.parts) {
-            if (part.type === "step-start") step++;
-            if (isToolUIPart(part)) usedTools.push({ step: Math.max(1, step), name: getToolName(part) });
+            if (isToolUIPart(part)) usedTools.add(getToolName(part));
           }
+          // Native search can return citations without a separate tool-call part.
+          if (sources.length > 0) usedTools.add("webSearch");
           return (
           <div className={`message ${item.role}`} key={item.id}>
             <strong>{item.role === "user" ? "Ty" : "i-sofa"}</strong>
-            {item.role === "assistant" && usedTools.length > 0 && <ol className="agent-steps" aria-label="Kroki agenta">
-              {usedTools.map((tool, index) => <li key={index}><span>{tool.step}. {tool.name}</span>{index < usedTools.length - 1 && <span className="step-arrow" aria-hidden="true"> → </span>}</li>)}
-            </ol>}
+            {item.role === "assistant" && usedTools.size > 0 && <ul className="agent-steps" aria-label="Użyte narzędzia">
+              {[...usedTools].map(name => <li key={name}><span>{name === "webSearch" ? "🔎 wyszukiwanie" : name === "aktualnyCzas" ? "🕒 aktualnyCzas" : name}</span></li>)}
+            </ul>}
             {item.parts.map((part, index) => {
               if (part.type === "text") return <p key={index}>{part.text}</p>;
               if (!isToolUIPart(part)) return null;
@@ -74,7 +75,18 @@ export function ChatPanel({ mode, active }: { mode: Mode; active: boolean }) {
                 {source && /^https:\/\/(pl\.wikipedia\.org|open-meteo\.com|api\.nbp\.pl|date\.nager\.at)\//.test(source) && <a className="source-badge" href={source} target="_blank" rel="noopener noreferrer">Źródło ↗</a>}
               </div>;
             })}
-            {item.role === "assistant" && item.metadata && <small className="agent-stats">Kroki: {item.metadata.steps} · Wywołania narzędzi: {item.metadata.toolCalls} · Czas: {(item.metadata.elapsedMs / 1000).toLocaleString("pl-PL", { maximumFractionDigits: 1 })} s</small>}
+            {item.role === "assistant" && sources.length > 0 && <div className="message-sources">
+              <strong>Źródła</strong>
+              <ul>{sources.map(source => {
+                if (source.type !== "source-url") return null;
+                const fetchedAt = item.metadata?.sourcesFetchedAt?.[source.sourceId];
+                return <li key={source.sourceId}>
+                  <a href={source.url} target="_blank" rel="noopener noreferrer">{source.title?.trim() || source.url}</a>
+                  {fetchedAt && <small> · pobrano: <time dateTime={fetchedAt}>{new Date(fetchedAt).toLocaleString("pl-PL", { timeZone: "Europe/Warsaw", dateStyle: "short", timeStyle: "medium" })}</time></small>}
+                </li>;
+              })}</ul>
+            </div>}
+            {item.role === "assistant" && item.metadata?.elapsedMs !== undefined && <small className="agent-stats">Kroki: {item.metadata.steps} · Wywołania narzędzi: {item.metadata.toolCalls} · Czas: {(item.metadata.elapsedMs / 1000).toLocaleString("pl-PL", { maximumFractionDigits: 1 })} s</small>}
           </div>
         ); })}
       </div>

@@ -1,10 +1,24 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createTools, STEP_LIMIT } from "../app/api/chat/tools.mjs";
+import { aktualnyCzas, createTools, STEP_LIMIT } from "../app/api/chat/tools.mjs";
 
 const make = (fetcher, owner = "test-a") => createTools({ model: "test/model", owner, fetcher });
 const json = body => new Response(JSON.stringify(body), { headers: { "Content-Type": "application/json" } });
 const run = (tools, name, args) => tools[name].execute(args);
+
+test("aktualnyCzas: polska data po północy, dzień tygodnia i czas letni", async () => {
+  assert.deepEqual(aktualnyCzas(new Date("2026-11-19T23:30:05Z")), {
+    strefa: "Europe/Warsaw", data: "2026-11-20", dzienTygodnia: "piątek", godzina: "00:30:05",
+  });
+  assert.deepEqual(aktualnyCzas(new Date("2026-07-01T22:15:00Z")), {
+    strefa: "Europe/Warsaw", data: "2026-07-02", dzienTygodnia: "czwartek", godzina: "00:15:00",
+  });
+  const result = await run(make(() => { throw new Error("network forbidden"); }), "aktualnyCzas", {});
+  assert.equal(result.ok, true);
+  assert.equal(result.strefa, "Europe/Warsaw");
+  assert.match(result.data, /^\d{4}-\d{2}-\d{2}$/);
+  assert.match(result.godzina, /^\d{2}:\d{2}:\d{2}$/);
+});
 
 test("kalkulator: liczby, zero, przepełnienie, odrzucenie kodu", async () => {
   const tools = make(() => { throw new Error("network forbidden"); });
@@ -21,7 +35,7 @@ test("czas i diagnostyka: poprawna strefa, błąd, konfiguracja bez sekretów", 
   const data = await run(tools, "diagnostyka", {});
   assert.equal(data.model, "test/model");
   assert.equal(data.limitKrokow, STEP_LIMIT);
-  assert.equal(data.narzedzia.length, 8);
+  assert.equal(data.narzedzia.length, 9);
   assert.ok(Object.values(data.konfiguracja).every(x => x === "tak" || x === "nie"));
   assert.ok(!Number.isNaN(Date.parse(data.fetchedAt)));
 });

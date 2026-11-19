@@ -1,6 +1,6 @@
 import { STEP_LIMIT } from "./tools.mjs";
 
-// This transform adds a deterministic ending without a seventh model call.
+// This transform adds a deterministic ending without another model call.
 export function withLimitSummary(budget) {
   const started = performance.now();
   let steps = 0;
@@ -9,8 +9,13 @@ export function withLimitSummary(budget) {
   const results = [];
   const pending = new Set();
   const openText = new Set();
+  const sourcesFetchedAt = {};
   return new TransformStream({
     transform(chunk, controller) {
+      if (chunk.type === "source-url") {
+        sourcesFetchedAt[chunk.sourceId] ??= new Date().toISOString();
+        controller.enqueue({ type: "message-metadata", messageMetadata: { sourcesFetchedAt: { ...sourcesFetchedAt } } });
+      }
       if (chunk.type === "start-step") steps++;
       if (chunk.type === "text-start") openText.add(chunk.id);
       if (chunk.type === "text-end") openText.delete(chunk.id);
@@ -58,6 +63,7 @@ export function withLimitSummary(budget) {
         finished = true;
         budget?.dispose();
         controller.enqueue({ type: "finish", finishReason: chunk.type === "finish" ? chunk.finishReason : "stop", messageMetadata: {
+          sourcesFetchedAt,
           steps: budget?.steps || steps, toolCalls: budget?.calls ?? results.length, elapsedMs: budget?.elapsedMs() ?? Math.round(performance.now() - started),
         } });
         return;
