@@ -4,6 +4,29 @@ Chatbot w Next.js App Router i TypeScript. Korzysta z Vercel AI SDK 6
 oraz `@openrouter/ai-sdk-provider`. Odpowiedzi pojawiają się strumieniowo,
 a serwer otrzymuje historię bieżącej rozmowy. Historia znika po odświeżeniu strony.
 
+## Wspólny endpoint agenta
+
+Czat, analiza JSON i generowanie obrazów korzystają z POST /api/agent.
+Endpoint najpierw sprawdza podpisaną sesję (401 bez sesji), potem pochodzenie
+żądania i jego treść. Interfejs rozpoczyna anonimową sesję przez istniejące
+/api/travel/session przed pierwszym żądaniem agenta.
+
+- mode: "chat" — historia messages, streamText, maksymalnie 5 kroków przez
+  stepCountIs(5) w zainstalowanym AI SDK 6. Narzędzia warsztatowe, aktualnyCzas,
+  webSearch (native, 3 wyniki) i generujObraz.
+- mode: "analyze" — pole message, generateText z Output.object, ścisły schemat
+  i ponowna walidacja wyniku na serwerze. Odpowiedź zawiera result albo error.
+- Przycisk „Wygeneruj obraz” wysyła tryb chat z generateImage: true, co wymusza
+  narzędzie generujObraz w pierwszym kroku. To narzędzie używa generateImage
+  i google/gemini-3.1-flash-image-preview. Pełny obraz, faktyczny model z API
+  i przycisk pobrania trafiają do czatu. toModelOutput zwraca do modelu tylko
+  „obraz wygenerowany”. Późniejsze tury nie przekazują modelowi pliku wyniku.
+
+Stare endpointy /api/chat, /api/analyze i /api/image usunięto po przejściu testów
+nowego endpointu. Pliki pomocnicze pozostały w katalogach chat i analyze.
+Testy: node --test tests/*.test.mjs. Testy używają lokalnych atrap dostawcy;
+nie uruchamiają płatnego generowania. Build: npm run build.
+
 ## Opis zmian i testów do oddania zadania
 
 Rozbudowano istniejący chatbot o personę asystenta i-sofa, zasady korzystania
@@ -34,7 +57,7 @@ Materiały do czterech kryteriów oceny:
 | Kryterium | Dowód w projekcie |
 | --- | --- |
 | Persona, zasady i przykłady — 3 pkt | `app/api/chat/chat-instructions.mjs`, przykłady analizy w `app/api/analyze/analysis.mjs` |
-| JSON, walidacja i błędy — 3 pkt | `app/analysis-schema.mjs`, `/api/analyze`, testy walidacji i błędów |
+| JSON, walidacja i błędy — 3 pkt | `app/analysis-schema.mjs`, `/api/agent` (`mode: "analyze"`), testy walidacji i błędów |
 | Udokumentowany atak i poprawka — 3 pkt | Sekcja „Sprawdzenie prompt injection”, zapisany wynik próby 1 zł, zabezpieczenia i testy regresji; atak odparty bez dodatkowej poprawki |
 | Opis zmian — 1 pkt | Niniejszy opis zmian i testów |
 
@@ -74,7 +97,7 @@ Fragmenty reasoning dostawcy nie są wysyłane do interfejsu.
 
 Zakładki zachowują stan podczas przełączania. Zwykły czat nadal zwraca
 strumieniowo szkic tekstowy i zachowuje historię. „Analiza JSON” wywołuje
-osobny endpoint `/api/analyze` i pokazuje dopiero kompletny, zwalidowany wynik:
+ten sam endpoint `/api/agent` w trybie `analyze` i pokazuje dopiero kompletny, zwalidowany wynik:
 
 - `category`: `sales` (oferta i cena), `support` (problem techniczny),
   `billing` (płatność lub zwrot), `unknown` (brak rozpoznanej sprawy).
@@ -128,8 +151,8 @@ W PowerShell można używać `npm.cmd` zamiast `npm`.
 
 ## Bezpieczeństwo
 
-Klucz API jest używany wyłącznie na serwerze w `/api/chat` i `/api/analyze`.
-Przeglądarka wysyła historię do `/api/chat` lub wiadomość do `/api/analyze`, bez klucza OpenRouter.
+Klucz API jest używany wyłącznie na serwerze w `/api/agent` (`mode: "chat"`) i `/api/agent` (`mode: "analyze"`).
+Przeglądarka wysyła historię do `/api/agent` (`mode: "chat"`) lub wiadomość do `/api/agent` (`mode: "analyze"`), bez klucza OpenRouter.
 Pliki `.env*` są ignorowane przez Git; wyjątkiem jest pusty `.env.example`.
 Nie należy dodawać prefiksu `NEXT_PUBLIC_` do zmiennych OpenRouter.
 
@@ -227,7 +250,7 @@ poprawnej walidacji trybu structured output.
 
 Zabezpieczenia sprawdzane niezależnie od posłuszeństwa modelu:
 
-- Instrukcja firmy, schemat i przykłady powstają na serwerze. `/api/analyze`
+- Instrukcja firmy, schemat i przykłady powstają na serwerze. `/api/agent` (`mode: "analyze"`)
   przyjmuje wyłącznie tekst `message`, umieszczany w roli `user`.
 - Dodatkowe pola żądania `send_now`, `permissions`, `role`, `system`, `schema`,
   `tools`, `model` i `apiKey` są odrzucane HTTP 400 przed żądaniem do OpenRouter,

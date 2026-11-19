@@ -1,6 +1,6 @@
 import { isToolUIPart, type UIMessage } from "ai";
 
-export type AgentMetadata = { steps: number; toolCalls: number; elapsedMs: number; interrupted?: boolean; sourcesFetchedAt?: Record<string, string> };
+export type AgentMetadata = { steps: number; toolCalls: number; elapsedMs: number; interrupted?: boolean; sourcesFetchedAt?: Record<string, string>; modelId?: string; vision?: boolean; generatedImage?: boolean };
 export type AgentMessage = UIMessage<AgentMetadata>;
 
 // Called only after SDK stop() has drained the stream, so no late chunk overwrites the note.
@@ -17,6 +17,7 @@ export function markInterrupted(messages: AgentMessage[], elapsedMs: number): Ag
       { type: "text", text: "Przerwane przez użytkownika", state: "done" },
     ],
     metadata: {
+      ...assistant.metadata,
       sourcesFetchedAt: assistant.metadata?.sourcesFetchedAt,
       steps: assistant.metadata?.steps ?? assistant.parts.filter(part => part.type === "step-start").length,
       toolCalls: assistant.metadata?.toolCalls ?? assistant.parts.filter(isToolUIPart).length,

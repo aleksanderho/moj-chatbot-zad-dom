@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { Chat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
-import { POST } from "../app/api/chat/route.ts";
+import { chatPOST as POST } from "./agent-fixtures.mjs";
 
 test("wyszukiwanie native: konfiguracja, źródła i trwały czas pobrania docierają do klienta", async () => {
   process.env.OPENROUTER_API_KEY = "test-key";
@@ -22,7 +22,7 @@ test("wyszukiwanie native: konfiguracja, źródła i trwały czas pobrania docie
     ] }) + chunk({}, "stop") + "data: [DONE]\n\n", { headers: { "Content-Type": "text/event-stream" } });
   };
   try {
-    const chat = new Chat({ transport: new DefaultChatTransport({ api: "http://localhost/api/chat", fetch: async (url, options) => POST(new Request(url, options)) }) });
+    const chat = new Chat({ transport: new DefaultChatTransport({ api: "http://localhost/api/agent", fetch: async (url, options) => POST(new Request(url, options)) }) });
     await chat.sendMessage({ text: "Sprawdź aktualne informacje" });
     assert.equal(chat.status, "ready", chat.error?.message);
     const sources = chat.messages[1].parts.filter(part => part.type === "source-url");

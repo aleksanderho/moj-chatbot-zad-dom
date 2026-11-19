@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { POST } from "../app/api/chat/route.ts";
+import { chatPOST as POST } from "./agent-fixtures.mjs";
 import { Chat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
 import { exampleMessages, reasoningInstruction } from "../app/api/chat/chat-instructions.mjs";
@@ -9,7 +9,7 @@ const user = (text, id = "u1") => ({ id, role: "user", parts: [{ type: "text", t
 const historyStart = 1 + exampleMessages.length;
 const textContent = (message) => typeof message.content === "string"
   ? message.content : message.content.map((part) => part.text).join("");
-const request = (messages, extra = {}) => new Request("http://localhost/api/chat", {
+const request = (messages, extra = {}) => new Request("http://localhost/api/agent", {
   method: "POST",
   headers: { "Content-Type": "application/json" },
   body: JSON.stringify({ messages, ...extra }),
@@ -114,7 +114,7 @@ test("konfiguracja, walidacja, historia i strumień bez połączeń z modelem", 
 
     const chat = new Chat({
       transport: new DefaultChatTransport({
-        api: "http://localhost/api/chat",
+        api: "http://localhost/api/agent",
         fetch: async (url, options) => POST(new Request(url, options)),
       }),
     });

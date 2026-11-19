@@ -2,19 +2,51 @@
 
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useChat } from "@ai-sdk/react";
-import { DefaultChatTransport, isToolUIPart, getToolName } from "ai";
+import { DefaultChatTransport, isToolUIPart, getToolName, type FileUIPart } from "ai";
 import { markInterrupted, type AgentMessage } from "./chat-interruption";
 import TravelPanel from "./dashboard/travel-panel";
 import { analysisSchema } from "./analysis-schema.mjs";
 import type { z } from "zod";
+import { usedToolLabels } from "./tool-labels";
 
-const transport = new DefaultChatTransport({ api: "/api/chat" });
+const transport = new DefaultChatTransport<AgentMessage>({
+  api: "/api/agent",
+  fetch: async (input, init) => {
+    const response = await fetch(input, init);
+    if (!response.ok) {
+      const text = await response.text();
+      let message = text;
+      try { message = JSON.parse(text)?.error?.message || text; } catch { /* Plain-text errors are also supported. */ }
+      throw new Error(message);
+    }
+    return response;
+  },
+  prepareSendMessagesRequest: ({ messages, body }) => ({ body: {
+    ...body,
+    mode: "chat",
+    messages: messages.map(item => ({ ...item, parts: item.role === "assistant"
+      ? item.parts.map(part => part.type === "file" ? { type: "text", text: "[Wygenerowany obraz]" } : part)
+      : item.parts,
+    })),
+  } }),
+});
 type Mode = "chat" | "json";
+const imageSuggestions = [
+  "Jasny salon ze skandynawską beżową sofą, drewniany stolik i naturalne światło.",
+  "Zielony fotel tapicerowany w przytulnym kąciku do czytania, lampa i rośliny.",
+  "Nowoczesny szary narożnik w przestronnym salonie, ciepłe dodatki i duży dywan.",
+];
+
+async function startSession(signal?: AbortSignal) {
+  const response = await fetch("/api/travel/session", { method: "POST", signal });
+  if (!response.ok) throw new Error("Nie udało się rozpocząć sesji. Odśwież stronę.");
+}
 
 function errorMessage(error: Error) {
   if (/^OpenRouter \((400|401|402|403|404|408\/504|429|502\/503)\):/.test(error.message)) return error.message;
   if (error.message.startsWith("Brak konfiguracji.")) return "Brak konfiguracji. Uzupełnij OPENROUTER_API_KEY i OPENROUTER_MODEL w pliku .env.local.";
   if (error.message === "Nieprawidłowa historia rozmowy." || error.message === "Wpisz wiadomość przed wysłaniem.") return error.message;
+  if (error.message.startsWith("Sesja wygasła.")) return error.message;
   return "Nie udało się uzyskać odpowiedzi AI. Sprawdź połączenie i spróbuj ponownie.";
 }
 
@@ -22,11 +54,86 @@ export function ChatPanel({ mode, active }: { mode: Mode; active: boolean }) {
   const [message, setMessage] = useState("");
   const { messages, sendMessage, status, error, regenerate, stop, setMessages } = useChat<AgentMessage>({ transport });
   const [stopping, setStopping] = useState(false);
+  const [photo, setPhoto] = useState<FileUIPart | null>(null);
+  const [readingPhoto, setReadingPhoto] = useState(false);
+  const [preparingSession, setPreparingSession] = useState(false);
+  const [imageRequested, setImageRequested] = useState(false);
+  const [mediaError, setMediaError] = useState("");
+  const fileInput = useRef<HTMLInputElement>(null);
+  const sessionRequest = useRef<AbortController | null>(null);
+  const sendLock = useRef(false);
+  const photoReader = useRef<FileReader | null>(null);
+  useEffect(() => () => { sessionRequest.current?.abort(); photoReader.current?.abort(); }, []);
   const startedAt = useRef(0);
-  const busy = status === "submitted" || status === "streaming";
+  const chatBusy = status === "submitted" || status === "streaming";
+  const busy = chatBusy || preparingSession || readingPhoto;
+  const generating = (chatBusy || preparingSession) && (imageRequested || Boolean(messages.at(-1)?.parts.some(part => isToolUIPart(part) && getToolName(part) === "generujObraz" && (part.state === "input-streaming" || part.state === "input-available"))));
+
+  async function submitChat(text: string, files: FileUIPart[] = [], generateImage = false, retry = false) {
+    if (sendLock.current || busy || stopping) return;
+    sendLock.current = true;
+    const controller = new AbortController();
+    sessionRequest.current = controller;
+    setPreparingSession(true); setImageRequested(generateImage); setMediaError("");
+    try {
+      await startSession(controller.signal);
+      controller.signal.throwIfAborted();
+      startedAt.current = performance.now();
+      setPreparingSession(false);
+      if (retry) await regenerate({ body: { mode: "chat", generateImage } });
+      else {
+        setMessage(""); setPhoto(null);
+        if (fileInput.current) fileInput.current.value = "";
+        await sendMessage({ text: generateImage ? `Wygeneruj obraz: ${text}` : text, ...(files.length ? { files } : {}) }, { body: { mode: "chat", generateImage } });
+      }
+    } catch (failure) {
+      if (!controller.signal.aborted) setMediaError(failure instanceof Error ? failure.message : "Nie udało się wysłać wiadomości.");
+    } finally {
+      if (sessionRequest.current === controller) { sessionRequest.current = null; setPreparingSession(false); setImageRequested(false); sendLock.current = false; }
+    }
+  }
+
+  function selectPhoto(file?: File) {
+    if (!file) return;
+    setMediaError("");
+    setPhoto(null);
+    if (!["image/jpeg", "image/png", "image/webp"].includes(file.type) || file.size > 4 * 1024 * 1024 || file.size === 0) {
+      setMediaError("Wybierz zdjęcie JPG, PNG lub WebP o rozmiarze do 4 MB.");
+      if (fileInput.current) fileInput.current.value = "";
+      return;
+    }
+    const reader = new FileReader();
+    photoReader.current = reader;
+    setReadingPhoto(true);
+    reader.onload = async () => {
+      const url = String(reader.result);
+      const preview = new Image();
+      preview.src = url;
+      try {
+        await preview.decode();
+        setPhoto({ type: "file", mediaType: file.type, filename: file.name, url });
+      } catch {
+        setMediaError("Nie udało się odczytać zdjęcia. Wybierz poprawny plik JPG, PNG lub WebP.");
+        if (fileInput.current) fileInput.current.value = "";
+      } finally { setReadingPhoto(false); }
+    };
+    reader.onerror = () => { setMediaError("Nie udało się odczytać zdjęcia. Wybierz je ponownie."); setReadingPhoto(false); };
+    reader.onabort = () => setReadingPhoto(false);
+    reader.readAsDataURL(file);
+  }
+
+  async function generatePicture() {
+    const prompt = message.trim();
+    if (!prompt || busy || stopping || sendLock.current) return;
+    if (prompt.length > 500) { setMediaError("Opis obrazu może mieć maksymalnie 500 znaków."); return; }
+    if (photo) { setMediaError("Aby wygenerować obraz z opisu, najpierw usuń załączone zdjęcie."); return; }
+    await submitChat(prompt, [], true);
+  }
 
   async function handleStop() {
     if (!busy || stopping) return;
+    if (preparingSession) { sessionRequest.current?.abort(); return; }
+    if (readingPhoto) { photoReader.current?.abort(); return; }
     setStopping(true);
     try {
       await stop();
@@ -37,10 +144,8 @@ export function ChatPanel({ mode, active }: { mode: Mode; active: boolean }) {
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const text = message.trim();
-    if (!text || busy || stopping) return;
-    startedAt.current = performance.now();
-    void sendMessage({ text }, { body: { mode } });
-    setMessage("");
+    if ((!text && !photo) || busy || stopping) return;
+    void submitChat(text || "Opisz to zdjęcie.", photo ? [photo] : []);
   }
 
   return (
@@ -49,22 +154,21 @@ export function ChatPanel({ mode, active }: { mode: Mode; active: boolean }) {
         {messages.length === 0 && <div className="welcome"><span className="welcome-mark" aria-hidden="true">i.</span><p className="eyebrow">Twój asystent i-sofa</p><h2>Porozmawiajmy o wygodzie.</h2><p>Zapytaj o sofy, wybór mebli lub ofertę sklepu.<br />W czym mogę Ci dzisiaj pomóc?</p></div>}
         {messages.map((item) => {
           const sources = item.parts.filter(part => part.type === "source-url" && /^https?:\/\//i.test(part.url));
-          const usedTools = new Set<string>();
-          for (const part of item.parts) {
-            if (isToolUIPart(part)) usedTools.add(getToolName(part));
-          }
-          // Native search can return citations without a separate tool-call part.
-          if (sources.length > 0) usedTools.add("webSearch");
+          const usedTools = usedToolLabels(item.parts);
           return (
           <div className={`message ${item.role}`} key={item.id}>
             <strong>{item.role === "user" ? "Ty" : "i-sofa"}</strong>
-            {item.role === "assistant" && usedTools.size > 0 && <ul className="agent-steps" aria-label="Użyte narzędzia">
-              {[...usedTools].map(name => <li key={name}><span>{name === "webSearch" ? "🔎 wyszukiwanie" : name === "aktualnyCzas" ? "🕒 aktualnyCzas" : name}</span></li>)}
-            </ul>}
+            {item.role === "assistant" && usedTools.length > 0 && <ol className="agent-steps" aria-label="Użyte narzędzia w kolejności">
+              {usedTools.map(({ id, name }, index) => <li key={id}><span>{index + 1}. {name === "webSearch" ? "🔎 wyszukiwanie" : name === "aktualnyCzas" ? "🕒 aktualnyCzas" : name === "generujObraz" ? "🎨 generujObraz" : name}</span>{index < usedTools.length - 1 && <span className="step-arrow" aria-hidden="true">→</span>}</li>)}
+            </ol>}
             {item.parts.map((part, index) => {
+              if (part.type === "file" && /^data:image\/(png|jpeg|webp);base64,/.test(part.url)) return <div key={index}>
+                <img className={item.role === "user" ? "chat-photo" : "generated-image"} src={part.url} alt={part.filename || (item.role === "user" ? "Przesłane zdjęcie" : "Wygenerowany obraz")} />
+                {item.metadata?.generatedImage && <a className="image-download" href={part.url} download={`i-sofa-obraz.${part.mediaType === "image/jpeg" ? "jpg" : part.mediaType === "image/webp" ? "webp" : "png"}`}>Pobierz</a>}
+              </div>;
               if (part.type === "text") return <p key={index}>{part.text}</p>;
               if (!isToolUIPart(part)) return null;
-              const output = part.state === "output-available" ? part.output as { ok?: boolean; message?: string; sourceUrl?: string } | undefined : undefined;
+              const output = part.state === "output-available" ? part.output as { ok?: boolean; message?: string; sourceUrl?: string; url?: string; mediaType?: string; modelId?: string } | undefined : undefined;
               const failed = part.state === "output-error" || output?.ok === false;
               const done = part.state === "output-available" || part.state === "output-denied";
               const interrupted = item.metadata?.interrupted && !failed && !done;
@@ -72,9 +176,15 @@ export function ChatPanel({ mode, active }: { mode: Mode; active: boolean }) {
               return <div className="tool-result" key={index}>
                 <span className="tool-badge">{getToolName(part)} · {interrupted ? "Przerwane" : failed ? "Nie udało się" : done ? "Gotowe" : "Pracuje…"}</span>
                 {failed && <p className="hint">{output?.message ?? "Narzędzie nie mogło wykonać zadania. Sprawdź argumenty i spróbuj ponownie."}</p>}
+                {getToolName(part) === "generujObraz" && output?.ok && output.url && /^data:image\/(png|jpeg|webp);base64,/.test(output.url) && <div>
+                  <img className="generated-image" src={output.url} alt="Wygenerowany obraz" />
+                  <a className="image-download" href={output.url} download={`i-sofa-obraz.${output.mediaType === "image/jpeg" ? "jpg" : output.mediaType === "image/webp" ? "webp" : "png"}`}>Pobierz</a>
+                  <small className="image-model">Model: {output.modelId || "dostawca nie zwrócił identyfikatora"}</small>
+                </div>}
                 {source && /^https:\/\/(pl\.wikipedia\.org|open-meteo\.com|api\.nbp\.pl|date\.nager\.at)\//.test(source) && <a className="source-badge" href={source} target="_blank" rel="noopener noreferrer">Źródło ↗</a>}
               </div>;
             })}
+            {item.role === "assistant" && (item.metadata?.vision || item.metadata?.generatedImage) && <small className="image-model">Model: {item.metadata.modelId || "dostawca nie zwrócił identyfikatora"}</small>}
             {item.role === "assistant" && sources.length > 0 && <div className="message-sources">
               <strong>Źródła</strong>
               <ul>{sources.map(source => {
@@ -86,24 +196,35 @@ export function ChatPanel({ mode, active }: { mode: Mode; active: boolean }) {
                 </li>;
               })}</ul>
             </div>}
-            {item.role === "assistant" && item.metadata?.elapsedMs !== undefined && <small className="agent-stats">Kroki: {item.metadata.steps} · Wywołania narzędzi: {item.metadata.toolCalls} · Czas: {(item.metadata.elapsedMs / 1000).toLocaleString("pl-PL", { maximumFractionDigits: 1 })} s</small>}
+            {item.role === "assistant" && !item.metadata?.generatedImage && item.metadata?.elapsedMs !== undefined && <small className="agent-stats">Kroki: {item.metadata.steps} · Wywołania narzędzi: {item.metadata.toolCalls} · Czas: {(item.metadata.elapsedMs / 1000).toLocaleString("pl-PL", { maximumFractionDigits: 1 })} s</small>}
           </div>
         ); })}
       </div>
-      {busy && <p className="typing" role="status"><span aria-hidden="true" />{status === "submitted" ? "Czekam na odpowiedź…" : "Agent pisze…"}</p>}
+      {busy && <p className="typing" role="status"><span aria-hidden="true" />{generating ? "Generuję obraz…" : readingPhoto ? "Wczytuję zdjęcie…" : status === "submitted" ? "Czekam na odpowiedź…" : "Agent pisze…"}</p>}
+      {mediaError && <div className="error" role="alert">{mediaError}</div>}
       {error && (
         <div className="error" role="alert">
           <p>{errorMessage(error)}</p>
-          <button type="button" disabled={busy || stopping} onClick={() => { startedAt.current = performance.now(); void regenerate({ body: { mode } }); }}>Spróbuj ponownie</button>
+          <button type="button" disabled={busy || stopping} onClick={() => { void submitChat("", [], imageRequested, true); }}>Spróbuj ponownie</button>
         </div>
       )}
       <form className="composer" onSubmit={handleSubmit}>
+        {photo && <div className="photo-preview"><img src={photo.url} alt="Zdjęcie gotowe do wysłania" /><span>{photo.filename}</span><button type="button" disabled={busy} onClick={() => { setPhoto(null); if (fileInput.current) fileInput.current.value = ""; }}>Usuń zdjęcie</button></div>}
+        <div className="media-actions">
+          <input className="sr-only" id="chat-photo" type="file" accept="image/jpeg,image/png,image/webp" ref={fileInput} disabled={busy || stopping} onChange={event => selectPhoto(event.target.files?.[0])} />
+          <button type="button" disabled={busy || stopping} onClick={() => fileInput.current?.click()}>Dodaj zdjęcie</button>
+          <button type="button" disabled={busy || stopping || !message.trim() || Boolean(photo)} onClick={() => { void generatePicture(); }}>Wygeneruj obraz</button>
+          <small>JPG, PNG, WebP · do 4 MB. Opis do generowania: do 500 znaków.</small>
+        </div>
         <label className="sr-only" htmlFor={`message-${mode}`}>Wiadomość klienta</label>
         <div className="input-row">
           <input id={`message-${mode}`} value={message} onChange={(event) => setMessage(event.target.value)} placeholder="Napisz wiadomość…" autoComplete="off" disabled={busy} />
           {busy || stopping
             ? <button type="button" disabled={stopping} onClick={() => { void handleStop(); }}>{stopping ? "Zatrzymuję…" : "Stop"}</button>
-            : <button type="submit" disabled={!message.trim()}>Wyślij</button>}
+            : <button type="submit" disabled={!message.trim() && !photo}>Wyślij</button>}
+        </div>
+        <div className="image-suggestions" role="group" aria-label="Podpowiedzi opisów obrazu">
+          {imageSuggestions.map((prompt, index) => <button key={prompt} type="button" disabled={busy || stopping} onClick={() => { setMessage(prompt); setMediaError(""); document.getElementById(`message-${mode}`)?.focus(); }}>{["Beżowa sofa w salonie", "Kącik z zielonym fotelem", "Salon z narożnikiem"][index]}</button>)}
         </div>
       </form>
     </section>
@@ -127,10 +248,11 @@ export function AnalysisPanel({ active }: { active: boolean }) {
     setResult(null);
     setError("");
     try {
-      const response = await fetch("/api/analyze", {
+      await startSession(current.signal);
+      const response = await fetch("/api/agent", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: message.trim() }),
+        body: JSON.stringify({ mode: "analyze", message: message.trim() }),
         signal: AbortSignal.any([current.signal, AbortSignal.timeout(55000)]),
       });
       const body = await response.json();

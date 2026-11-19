@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { Chat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
-import { POST } from "../app/api/chat/route.ts";
+import { chatPOST as POST } from "./agent-fixtures.mjs";
 
 test("narzędzia w strumieniu, wynik dla modelu, kolejna wiadomość i limit 5 kroków", async () => {
   process.env.OPENROUTER_API_KEY = "test-key";
@@ -23,13 +23,13 @@ test("narzędzia w strumieniu, wynik dla modelu, kolejna wiadomość i limit 5 k
     return new Response(chunk(delta, null) + chunk({}, useTool ? "tool_calls" : "stop") + "data: [DONE]\n\n", { headers: { "Content-Type": "text/event-stream" } });
   };
   try {
-    const chat = new Chat({ transport: new DefaultChatTransport({ api: "http://localhost/api/chat", fetch: async (url, options) => POST(new Request(url, options)) }) });
+    const chat = new Chat({ transport: new DefaultChatTransport({ api: "http://localhost/api/agent", fetch: async (url, options) => POST(new Request(url, options)) }) });
     await chat.sendMessage({ text: "Oblicz 12 razy 3" });
     assert.equal(chat.status, "ready", chat.error?.message);
     assert.equal(calls, 2);
     assert.equal(chat.messages[1].metadata.steps, 2);
     assert.equal(chat.messages[1].metadata.toolCalls, 1);
-    assert.ok(!JSON.stringify(chat.messages[1]).includes("Zatrzymałem się po"));
+    assert.ok(!JSON.stringify(chat.messages[1]).includes("Przerwałem po"));
     assert.ok(chat.messages[1].parts.some(p => p.type === "tool-kalkulator" && p.state === "output-available" && p.output.wynik === 36));
     assert.ok(bodies[1].messages.some(m => m.role === "tool" && m.content.includes('"wynik":36')));
     await chat.sendMessage({ text: "Dziękuję" });
@@ -37,23 +37,23 @@ test("narzędzia w strumieniu, wynik dla modelu, kolejna wiadomość i limit 5 k
     assert.equal(calls, 3);
     repeat = true;
     calls = 0;
-    const response = await POST(new Request("http://localhost/api/chat", { method: "POST", body: JSON.stringify({ messages: [{ id: "u1", role: "user", parts: [{ type: "text", text: "Licz dalej" }] }] }) }));
+    const response = await POST(new Request("http://localhost/api/agent", { method: "POST", body: JSON.stringify({ messages: [{ id: "u1", role: "user", parts: [{ type: "text", text: "Licz dalej" }] }] }) }));
     const stream = await response.text();
     assert.equal(calls, 5);
-    assert.match(stream, /Zatrzymałem się po 5 krokach/);
+    assert.match(stream, /Przerwałem po 5 krokach/);
     assert.match(stream, /wynik/);
     assert.match(stream, /36/);
     assert.equal((stream.match(/"type":"start-step"/g) ?? []).length, 5);
     assert.match(response.headers.get("set-cookie"), /HttpOnly; SameSite=Strict/);
     calls = 0;
-    const limitedChat = new Chat({ transport: new DefaultChatTransport({ api: "http://localhost/api/chat", fetch: async (url, options) => POST(new Request(url, options)) }) });
+    const limitedChat = new Chat({ transport: new DefaultChatTransport({ api: "http://localhost/api/agent", fetch: async (url, options) => POST(new Request(url, options)) }) });
     await limitedChat.sendMessage({ text: "Licz dalej" });
     assert.equal(limitedChat.status, "ready", limitedChat.error?.message);
     assert.equal(calls, 5);
     const parts = limitedChat.messages[1].parts;
     assert.equal(parts.filter(p => p.type === "step-start").length, 5);
     assert.equal(parts.filter(p => p.type === "tool-kalkulator").length, 5);
-    assert.ok(parts.some(p => p.type === "text" && p.text.includes("Zatrzymałem się po 5 krokach") && p.text.includes("36")));
+    assert.ok(parts.some(p => p.type === "text" && p.text.includes("Przerwałem po 5 krokach") && p.text.includes("36")));
     calls = 0;
     repeat = false;
     await limitedChat.sendMessage({ text: "Dziękuję" });
@@ -62,7 +62,7 @@ test("narzędzia w strumieniu, wynik dla modelu, kolejna wiadomość i limit 5 k
     repeat = true;
     batch = true;
     calls = 0;
-    const batchChat = new Chat({ transport: new DefaultChatTransport({ api: "http://localhost/api/chat", fetch: async (url, options) => POST(new Request(url, options)) }) });
+    const batchChat = new Chat({ transport: new DefaultChatTransport({ api: "http://localhost/api/agent", fetch: async (url, options) => POST(new Request(url, options)) }) });
     await batchChat.sendMessage({ text: "Wiele obliczeń" });
     assert.equal(batchChat.status, "ready", batchChat.error?.message);
     assert.equal(calls, 4);
@@ -72,7 +72,7 @@ test("narzędzia w strumieniu, wynik dla modelu, kolejna wiadomość i limit 5 k
     batch = false;
     failTool = true;
     calls = 0;
-    const failedChat = new Chat({ transport: new DefaultChatTransport({ api: "http://localhost/api/chat", fetch: async (url, options) => POST(new Request(url, options)) }) });
+    const failedChat = new Chat({ transport: new DefaultChatTransport({ api: "http://localhost/api/agent", fetch: async (url, options) => POST(new Request(url, options)) }) });
     await failedChat.sendMessage({ text: "Dziel przez zero" });
     assert.equal(failedChat.status, "ready", failedChat.error?.message);
     assert.equal(calls, 1);

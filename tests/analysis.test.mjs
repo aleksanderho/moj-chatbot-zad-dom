@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { POST } from "../app/api/analyze/route.ts";
+import { analyzePOST as POST } from "./agent-fixtures.mjs";
 import { analysisSchema, validateAnalysis } from "../app/analysis-schema.mjs";
 import { analysisSystem } from "../app/api/analyze/analysis.mjs";
 
@@ -37,7 +37,7 @@ test("pięć przykładów z lekcji: ten sam walidator co endpoint", async (t) =>
 });
 
 const valid = { category: "sales", priority: "normal", draft: "Dziękuję za wiadomość. Model i wycena wymagają sprawdzenia przez pracownika.", needs_review: true };
-const request = (body = { message: "Proszę o ofertę 8 sof." }, signal) => new Request("http://localhost/api/analyze", {
+const request = (body = { message: "Proszę o ofertę 8 sof." }, signal) => new Request("http://localhost/api/agent", {
   method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal,
 });
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });

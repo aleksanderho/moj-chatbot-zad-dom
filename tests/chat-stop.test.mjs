@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { Chat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
-import { POST } from "../app/api/chat/route.ts";
+import { chatPOST as POST } from "./agent-fixtures.mjs";
 import { markInterrupted } from "../app/chat-interruption.ts";
 
 test("Stop przed odpowiedzią: dopisek bez usuwania historii i bez duplikatów", () => {
@@ -50,7 +50,7 @@ test("Stop przerywa strumień SDK i sygnał serwera, zachowuje wynik i pozwala w
     } }), { headers: { "Content-Type": "text/event-stream" } });
   };
   try {
-    const chat = new Chat({ transport: new DefaultChatTransport({ api: "http://localhost/api/chat", fetch: async (url, options) => POST(new Request(url, options)) }) });
+    const chat = new Chat({ transport: new DefaultChatTransport({ api: "http://localhost/api/agent", fetch: async (url, options) => POST(new Request(url, options)) }) });
     chat['~registerMessagesCallback'](() => {
       if (chat.messages.some(m => m.role === "assistant" && m.parts.some(p => p.type === "text" && p.text.includes("Gotowe ustalenie.")))) receivedText();
     });

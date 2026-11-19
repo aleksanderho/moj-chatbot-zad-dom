@@ -45,13 +45,14 @@ export function withLimitSummary(budget) {
         const reason = budget?.reason;
         if (reason || steps >= STEP_LIMIT) {
         const findings = results.map(({ name, output }) => {
+          if (name === "generujObraz" && output?.ok) return `${name}: obraz wygenerowany (model: ${output.modelId}).`;
           const formatted = JSON.stringify(output, null, 2) ?? "Brak wyniku.";
           return `${name}:\n${formatted.length > 3000 ? formatted.slice(0, 3000) + "\n… (skrócono wynik)" : formatted}`;
         });
         const heading = reason === "timeout" ? "Zatrzymałem się po 60 sekundach. Nie udało się ukończyć zadania."
           : reason === "error" ? `Nie udało się dokończyć sprawdzania: ${budget.failure} Kończę z wynikiem częściowym.`
           : reason === "tools" ? "Zatrzymałem się po 16 wywołaniach narzędzi."
-          : `Zatrzymałem się po ${STEP_LIMIT} krokach`;
+          : `Przerwałem po ${STEP_LIMIT} krokach`;
         const summary = `\n\n${heading}\n\n` + (findings.length
           ? "Wyniki zebrane do tej pory (błędy oznaczają brak potwierdzonych danych):\n\n" + findings.join("\n\n")
           : "Nie uzyskałem potwierdzonych wyników narzędzi. Powyżej znajduje się dotychczasowa odpowiedź, jeśli została przygotowana.");

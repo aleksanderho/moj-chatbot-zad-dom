@@ -7,9 +7,9 @@ import { createTools, STEP_LIMIT } from "./tools.mjs";
 import { z } from "zod";
 import { exampleMessages } from "./chat-instructions.mjs";
 import { systemPrompt } from "./instructions.mjs";
+import { imagePartSchema } from "./image-input.mjs";
+import { createImageTool } from "../agent/image-tool.mjs";
 
-export const runtime = "nodejs";
-export const maxDuration = 60;
 
 function providerErrorMessage(error: unknown): string {
   let code: number | undefined;
@@ -39,23 +39,27 @@ function providerErrorMessage(error: unknown): string {
 }
 
 // Accept tool UI parts on subsequent turns, but never trust client tool results.
-// Only text is forwarded; current-turn results come directly from server tools.
+// Only text and validated inline images are forwarded; tool results come from the server.
+const textPartSchema = z.object({ type: z.literal("text"), text: z.string() });
+type InputPart = z.infer<typeof textPartSchema> | z.infer<typeof imagePartSchema>;
 const requestSchema = z.object({
   stepByStep: z.boolean().default(false),
-  mode: z.literal("chat").default("chat"),
+  mode: z.literal("chat"),
+  generateImage: z.boolean().default(false),
   messages: z.array(z.object({
     id: z.string().min(1),
     role: z.enum(["user", "assistant"]),
     parts: z.array(z.union([
-      z.object({ type: z.literal("text"), text: z.string() }),
+      textPartSchema,
+      imagePartSchema,
       z.object({ type: z.literal("step-start") }),
       z.object({ type: z.literal("reasoning"), text: z.string() }),
       z.object({ type: z.string().refine((value) => value.startsWith("tool-") || value === "dynamic-tool" || value === "source-url") }),
-    ])).min(1).transform((parts) => parts.filter((part): part is { type: "text"; text: string } => part.type === "text" && "text" in part)),
+    ])).min(1).transform((parts) => parts.filter((part): part is InputPart => (part.type === "text" && "text" in part) || (part.type === "file" && "url" in part))),
   })).min(1),
 });
 
-export async function POST(request: Request) {
+export async function handleChat(request: Request, body: unknown) {
   const started = performance.now();
   const apiKey = process.env.OPENROUTER_API_KEY?.trim();
   const model = process.env.OPENROUTER_MODEL?.trim();
@@ -67,13 +71,13 @@ export async function POST(request: Request) {
     );
   }
 
-  const parsed = requestSchema.safeParse(await request.json().catch(() => null));
+  const parsed = requestSchema.safeParse(body);
   if (!parsed.success) {
     return new Response("Nieprawidłowa historia rozmowy.", { status: 400 });
   }
   const messages = parsed.data.messages;
   const lastMessage = messages.at(-1)!;
-  if (lastMessage.role !== "user" || !lastMessage.parts.some((part) => part.text.trim())) {
+  if (lastMessage.role !== "user" || !lastMessage.parts.some((part) => part.type === "file" || part.text.trim())) {
     return new Response("Wpisz wiadomość przed wysłaniem.", { status: 400 });
   }
 
@@ -85,18 +89,26 @@ export async function POST(request: Request) {
     const tools = {
       ...createTools({ model, owner, signal: budget.signal, budget }),
       webSearch: openrouter.tools.webSearch({ maxResults: 3, engine: "native" }),
+      generujObraz: createImageTool({ apiKey, signal: budget.signal, budget }),
     };
     const result = streamText({
       model: openrouter(model),
       system: systemPrompt(parsed.data.stepByStep),
       tools,
       stopWhen: [stepCountIs(STEP_LIMIT), () => Boolean(budget.reason)],
-      prepareStep: () => { budget.steps++; return {}; },
+      prepareStep: ({ stepNumber }) => {
+        budget.steps++;
+        return parsed.data.generateImage && stepNumber === 0
+          ? { toolChoice: { type: "tool" as const, toolName: "generujObraz" as const } }
+          : {};
+      },
       onStepFinish: ({ toolResults, toolCalls }) => {
         const pendingLocal = toolCalls.filter(call => !call.providerExecuted && !toolResults.some(result => result.toolCallId === call.toolCallId));
         if (pendingLocal.length > 0 && !budget.reason) budget.fail("Nie udało się poprawnie wykonać wywołania narzędzia.");
       },
       messages: [...exampleMessages, ...await convertToModelMessages(messages)],
+      // Read the actual API model field, never substitute the configured model ID.
+      includeRawChunks: true,
       abortSignal: budget.signal,
       maxRetries: 0,
       // Do not log provider errors, which may contain request details.
@@ -108,6 +120,15 @@ export async function POST(request: Request) {
       stream: result.toUIMessageStream({
         sendSources: true,
         sendReasoning: false,
+        messageMetadata: ({ part }) => {
+          if (part.type === "start") return { vision: messages.some(message => message.role === "user" && message.parts.some(part => part.type === "file")) };
+          if (part.type !== "raw") return;
+          const response = z.object({ model: z.string().trim().min(1) }).safeParse(part.rawValue);
+          if (response.success) return {
+            modelId: response.data.model,
+            vision: messages.some(message => message.role === "user" && message.parts.some(part => part.type === "file")),
+          };
+        },
         onError: providerErrorMessage,
       }).pipeThrough(withLimitSummary(budget)),
     });
