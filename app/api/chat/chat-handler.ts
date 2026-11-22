@@ -1,3 +1,4 @@
+import { requiresKnowledgeSearch, knowledgeStepPolicy } from "../../../lib/knowledge-routing.ts";
 import { createSearchKnowledgeTool } from "../../../lib/search-knowledge.ts";
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import { APICallError, convertToModelMessages, createUIMessageStream, createUIMessageStreamResponse, streamText, stepCountIs } from "ai";
@@ -124,17 +125,20 @@ export async function handleChat(request: Request, body: unknown) {
       generujObraz: createImageTool({ apiKey, signal: budget.signal, budget }),
       zapiszProfil: createProfileTool(request, lastMessage.parts.filter(part => part.type === "text").map(part => part.text).join("\n"), budget),
     };
+    const needsKnowledge = requiresKnowledgeSearch(messages);
     const result = streamText({
       model: openrouter(model),
       system: systemPrompt(parsed.data.stepByStep) + "\n\n" + profileInstruction(profile),
       tools,
+      ...(needsKnowledge ? { activeTools: Object.keys(tools).filter(name => name !== "webSearch") as (keyof typeof tools)[] } : {}),
       stopWhen: [stepCountIs(STEP_LIMIT), () => Boolean(budget.reason)],
       prepareStep: async ({ stepNumber }) => {
         budget.steps++;
         const currentProfile = stepNumber === 0 ? profile : await loadProfile();
         return {
-          system: systemPrompt(parsed.data.stepByStep) + "\n\n" + profileInstruction(currentProfile),
-          ...(parsed.data.generateImage && stepNumber === 0 ? { toolChoice: { type: "tool" as const, toolName: "generujObraz" as const } } : {}),
+          system: systemPrompt(parsed.data.stepByStep) + "\n\n" + profileInstruction(currentProfile) + (needsKnowledge ? "\nW tej turze wymagane jest świeże searchKnowledge. Wcześniejsze błędy z historii nie opisują stanu obecnej próby. Dla doprecyzowania produktu połącz je z poprzednim pytaniem użytkownika, np. Bella po pytaniu o cenę oznacza pytanie o cenę sofy Bella." : ""),
+          ...knowledgeStepPolicy(needsKnowledge, stepNumber),
+          ...(!needsKnowledge && parsed.data.generateImage && stepNumber === 0 ? { toolChoice: { type: "tool" as const, toolName: "generujObraz" as const } } : {}),
         };
       },
       onStepFinish: ({ toolResults, toolCalls }) => {
@@ -206,5 +210,6 @@ export async function handleChat(request: Request, body: unknown) {
     return new Response(providerErrorMessage(error), { status: 500 });
   }
 }
+
 
 
