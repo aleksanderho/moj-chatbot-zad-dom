@@ -20,21 +20,31 @@ export function createSearchKnowledgeTool(request: Request, budget: ReturnType<t
       const parsed = inputSchema.safeParse(input);
       if (!parsed.success) return { ok: false, message: "Podaj pytanie zawierające od 1 do 4000 znaków.", fragments: [] };
       const signal = AbortSignal.any([request.signal, budget.signal, AbortSignal.timeout(TOOL_TIMEOUT_MS)]);
+      let stage = "embedding";
       try {
         return await withinSignal(async () => {
           const { embedding } = await embed({ model: getEmbeddingModel(), value: parsed.data.question, maxRetries: 0, abortSignal: signal });
           if (embedding.length !== 1536 || !embedding.every(Number.isFinite)) throw new Error("Invalid embedding");
           signal.throwIfAborted();
+          stage = "database";
           const { data, error } = await getSupabase().rpc("match_chunks", { query_embedding: embedding, match_count: 3 })
             .not("similarity", "is", null).order("similarity", { ascending: false }).limit(3).abortSignal(signal);
           if (error) throw new Error("Search failed");
+          stage = "results";
           const fragments = matchesSchema.parse(data).filter(fragment => fragment.similarity >= KNOWLEDGE_MIN_SIMILARITY && fragment.similarity <= 1).sort((a, b) => b.similarity - a.similarity).slice(0, 3).map((fragment, index) => ({ ...fragment, sourceId: `${(options?.toolCallId ?? "search").replace(/[^a-zA-Z0-9_-]/g, "_")}-${index}` }));
           return { ok: true, fragments };
         }, signal);
       } catch {
-        return { ok: false, message: "Nie udało się przeszukać bazy wiedzy. Nie zgaduj odpowiedzi i nie zastępuj jej wynikami z internetu. Poproś o ponowienie próby.", fragments: [] };
+        return { ok: false, code: signal.aborted ? "timeout" : stage, message: signal.aborted
+          ? "Przekroczono czas wyszukiwania w bazie wiedzy. Spróbuj ponownie."
+          : stage === "embedding"
+            ? "Nie udało się utworzyć embeddingu pytania. Sprawdź OPENROUTER_EMBEDDING_MODEL, klucz i saldo OpenRouter w środowisku uruchomionej aplikacji."
+            : stage === "database"
+              ? "Nie udało się wywołać match_chunks. Sprawdź funkcję i konfigurację Supabase w środowisku uruchomionej aplikacji."
+              : "Baza zwróciła nieprawidłowy wynik wyszukiwania. Sprawdź pola title, content i similarity w match_chunks.", fragments: [] };
       }
     },
   });
 }
+
 

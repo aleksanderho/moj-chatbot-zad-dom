@@ -31,6 +31,7 @@ test("zapis pary, odczyt, ponowienie, nowa rozmowa, izolacja i błędy", async (
         writes++;
         if (failSave) return json({ code: "test", message: "save failed" }, { status: 400 });
         assert.equal(body.length, 2);
+        assert.ok(body.every(row => Array.isArray(row.knowledge_sources)), "NOT NULL: każdy wiersz musi mieć knowledge_sources");
         assert.deepEqual(body.map(row => row.role), ["user", "assistant"]);
         assert.equal(body[1].content, "Dzień dobry!");
         for (const row of body) if (!rows.some(existing => existing.id === row.id)) rows.push({ ...row, position: rows.length + 1 });
@@ -123,3 +124,4 @@ test("zapis kopii źródeł jest atomowy z odpowiedzią, odczyt nie potrzebuje d
     assert.deepEqual((await loadMessages("conversation"))[2].metadata.knowledgeSources,[]);
   } finally {globalThis.fetch=original;}
 });
+

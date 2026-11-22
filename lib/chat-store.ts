@@ -93,9 +93,10 @@ export async function listConversations(owner: string) {
 export async function saveTurn(id: string, user: UIMessage, assistant: UIMessage) {
   // Jeden atomowy INSERT obu wierszy. Stałe klucze chronią także przed ponowieniem żądania.
   const { error } = await getSupabase().from("messages").upsert([
-    { id: `${id}:${user.id}`, conversation_id: id, role: "user", content: messageText(user) },
+    { id: `${id}:${user.id}`, conversation_id: id, role: "user", content: messageText(user), knowledge_sources: [] },
     { id: `${id}:reply-${user.id}`, conversation_id: id, role: "assistant", content: messageText(assistant), knowledge_sources: knowledgeSources(assistant.parts) },
   ], { onConflict: "id", ignoreDuplicates: true });
   if (error) throw new Error(storageError);
 }
+
 
