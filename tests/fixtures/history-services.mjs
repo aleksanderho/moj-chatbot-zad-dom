@@ -7,12 +7,16 @@ globalThis.fetch = async (input, options = {}) => {
   const url = new URL(typeof input === "string" ? input : input.url ?? String(input));
   if (url.hostname === "openrouter.ai") {
     const body = JSON.parse(options.body);
+    if (url.pathname.endsWith("/embeddings")) return Response.json({ object: "list", model: body.model, data: [{ object: "embedding", index: 0, embedding: Array(1536).fill(0.1) }], usage: { prompt_tokens: 5, total_tokens: 5 } });
     const last = body.messages.at(-1);
     const systemContent = body.messages[0].content;
     const systemText = typeof systemContent === "string" ? systemContent : systemContent.map(part => part.text ?? "").join("\n");
     const text = typeof last.content === "string" ? last.content : last.content.filter(part => part.type === "text").map(part => part.text).join("");
     let content = `Odpowiedź: ${text}`;
     const chunk = (delta, finish_reason = null) => `data: ${JSON.stringify({ id: "mock-reply", object: "chat.completion.chunk", model: "test/model", created: 1, choices: [{ index: 0, delta, finish_reason }] })}\n\n`;
+    if (last.role === "user" && text === "Jaka jest cena planu w bazie?") {
+      return new Response(chunk({ role: "assistant", tool_calls: [{ index: 0, id: "knowledge-call", type: "function", function: { name: "searchKnowledge", arguments: JSON.stringify({ question: text }) } }] }) + chunk({}, "tool_calls") + "data: [DONE]\n\n", { headers: { "Content-Type": "text/event-stream" } });
+    }
     if (last.role === "user" && text === "Mam na imię Ola.") {
       if (!body.tools.some(tool => tool.function?.name === "zapiszProfil")) throw new Error("Brak narzędzia profilu");
       return new Response(chunk({ role: "assistant", tool_calls: [{ index: 0, id: "profile-call", type: "function", function: { name: "zapiszProfil", arguments: JSON.stringify({ name: "Ola", nameQuote: text, preferences: [] }) } }] }) + chunk({}, "tool_calls") + "data: [DONE]\n\n", { headers: { "Content-Type": "text/event-stream" } });
@@ -22,7 +26,9 @@ globalThis.fetch = async (input, options = {}) => {
     }
     if (last.role === "tool") {
       const result = JSON.parse(last.content);
-      if (result.ok) {
+      if (result.ok && result.fragments) {
+        content = `Plan kosztuje 490 zł netto. [[kb:${result.fragments[0].sourceId}]] 📎 Źródło: Cennik`;
+      } else if (result.ok) {
         if (result.remembered.name && !systemText.includes('"name":"Ola"')) throw new Error("Profil nie został odświeżony po narzędziu");
         content = result.remembered.name ? "Zapamiętałem: imię — Ola." : "Zapamiętałem: ulubione jedzenie — pierogi.";
       } else content = "Nie zapisano profilu.";
@@ -35,6 +41,7 @@ globalThis.fetch = async (input, options = {}) => {
   }
   if (url.hostname !== "database.example.test") return realFetch(input, options);
   const table = url.pathname.split("/").at(-1);
+  if (table === "match_chunks") return Response.json([{ title: "Cennik", content: "Plan kosztuje 490 zł netto.\nWersja dokumentu z dnia zakupu.", similarity: 0.6789 }]);
   if (table === "user_profiles") {
     let matches = true;
     const expected = url.searchParams.get("preferences");
@@ -79,3 +86,4 @@ globalThis.fetch = async (input, options = {}) => {
   }
   return Response.json(selected);
 };
+

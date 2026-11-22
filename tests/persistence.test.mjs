@@ -94,3 +94,32 @@ test("zapis pary, odczyt, ponowienie, nowa rozmowa, izolacja i błędy", async (
     ] }), "Gotowe\n[obraz]\n[obraz]");
   } finally { globalThis.fetch = originalFetch; }
 });
+
+test("zapis kopii źródeł jest atomowy z odpowiedzią, odczyt nie potrzebuje dokumentów", async () => {
+  const { saveTurn, loadMessages } = await import("../lib/chat-store.ts");
+  const { knowledgeSources } = await import("../app/knowledge-sources.ts");
+  const original = globalThis.fetch;
+  const rows=[];
+  process.env.SUPABASE_URL="https://database.example.test";
+  process.env.SUPABASE_SECRET_KEY="test-secret";
+  globalThis.fetch=async (input,options={})=>{
+    const url=new URL(typeof input==="string"?input:input.url??String(input));
+    assert.ok(url.pathname.endsWith("/messages"));
+    if(options.method==="POST") {rows.push(...JSON.parse(options.body));return new Response(null,{status:201});}
+    return Response.json(rows);
+  };
+  const source={sourceId:"source-0",title:"Cennik",content:"Dokładny tekst.\nDrugi wiersz.",similarity:0.6789};
+  try {
+    await saveTurn("conversation",{id:"u1",role:"user",parts:[{type:"text",text:"Cena?"}]},{id:"a",role:"assistant",parts:[
+      {type:"tool-searchKnowledge",toolCallId:"s",state:"output-available",input:{},output:{ok:true,fragments:[source,{...source,sourceId:"unused"}]}},
+      {type:"text",text:"Odpowiedź [[kb:source-0]]"}
+    ]});
+    assert.equal(rows.length,2);
+    assert.deepEqual(rows[1].knowledge_sources,[source]);
+    source.content="Zmieniony dokument";
+    const restored=(await loadMessages("conversation"))[1];
+    assert.equal(knowledgeSources(restored.parts,restored.metadata.knowledgeSources)[0].content,"Dokładny tekst.\nDrugi wiersz.");
+    rows.push({id:"legacy",role:"assistant",content:"Stara odpowiedź"});
+    assert.deepEqual((await loadMessages("conversation"))[2].metadata.knowledgeSources,[]);
+  } finally {globalThis.fetch=original;}
+});

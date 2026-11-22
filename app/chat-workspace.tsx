@@ -7,6 +7,7 @@ import { markInterrupted, type AgentMessage } from "./chat-interruption";
 import TravelPanel from "./dashboard/travel-panel";
 import { analysisSchema } from "./analysis-schema.mjs";
 import type { z } from "zod";
+import { knowledgeSources, withoutKnowledgeMarkers } from "./knowledge-sources";
 import { usedToolLabels } from "./tool-labels";
 
 const transport = new DefaultChatTransport<AgentMessage>({
@@ -204,18 +205,20 @@ export function ChatPanel({ mode, active }: { mode: Mode; active: boolean }) {
         {messages.map((item) => {
           const sources = item.parts.filter(part => part.type === "source-url" && /^https?:\/\//i.test(part.url));
           const usedTools = usedToolLabels(item.parts);
+          const knowledge = knowledgeSources(item.parts, item.metadata?.knowledgeSources);
+          if (knowledge.length && !usedTools.some(tool => tool.name === "searchKnowledge")) usedTools.push({ id: "saved-knowledge", name: "searchKnowledge" });
           return (
           <div className={`message ${item.role}`} key={item.id}>
             <strong>{item.role === "user" ? "Ty" : "i-sofa"}</strong>
             {item.role === "assistant" && usedTools.length > 0 && <ol className="agent-steps" aria-label="Użyte narzędzia w kolejności">
-              {usedTools.map(({ id, name }, index) => <li key={id}><span>{index + 1}. {name === "webSearch" ? "🔎 wyszukiwanie" : name === "aktualnyCzas" ? "🕒 aktualnyCzas" : name === "generujObraz" ? "🎨 generujObraz" : name}</span>{index < usedTools.length - 1 && <span className="step-arrow" aria-hidden="true">→</span>}</li>)}
+              {usedTools.map(({ id, name }, index) => <li key={id}><span>{index + 1}. {name === "searchKnowledge" ? "📚 baza wiedzy" : name === "webSearch" ? "🔎 wyszukiwanie" : name === "aktualnyCzas" ? "🕒 aktualnyCzas" : name === "generujObraz" ? "🎨 generujObraz" : name}</span>{index < usedTools.length - 1 && <span className="step-arrow" aria-hidden="true">→</span>}</li>)}
             </ol>}
             {item.parts.map((part, index) => {
               if (part.type === "file" && /^data:image\/(png|jpeg|webp);base64,/.test(part.url)) return <div key={index}>
                 <img className={item.role === "user" ? "chat-photo" : "generated-image"} src={part.url} alt={part.filename || (item.role === "user" ? "Przesłane zdjęcie" : "Wygenerowany obraz")} />
                 {item.metadata?.generatedImage && <a className="image-download" href={part.url} download={`i-sofa-obraz.${part.mediaType === "image/jpeg" ? "jpg" : part.mediaType === "image/webp" ? "webp" : "png"}`}>Pobierz</a>}
               </div>;
-              if (part.type === "text") return <p key={index}>{part.text}</p>;
+              if (part.type === "text") return <p key={index}>{item.role === "assistant" ? withoutKnowledgeMarkers(part.text) : part.text}</p>;
               if (!isToolUIPart(part)) return null;
               const output = part.state === "output-available" ? part.output as { ok?: boolean; message?: string; sourceUrl?: string; url?: string; mediaType?: string; modelId?: string } | undefined : undefined;
               const failed = part.state === "output-error" || output?.ok === false;
@@ -234,6 +237,15 @@ export function ChatPanel({ mode, active }: { mode: Mode; active: boolean }) {
               </div>;
             })}
             {item.role === "assistant" && (item.metadata?.vision || item.metadata?.generatedImage) && <small className="image-model">Model: {item.metadata.modelId || "dostawca nie zwrócił identyfikatora"}</small>}
+            {item.role === "assistant" && knowledge.length > 0 && <div className="knowledge-sources">
+              <strong>Źródła z bazy wiedzy</strong>
+              <p className="hint">Podobieństwo oznacza dopasowanie tekstów, nie pewność odpowiedzi.</p>
+              <ul>{knowledge.map(source => <li key={source.sourceId}>
+                <span className="knowledge-source-title">{source.title}</span>
+                <span className="knowledge-similarity">Podobieństwo: {(source.similarity * 100).toLocaleString("pl-PL", { maximumFractionDigits: 1 })}%</span>
+                <details><summary>Pokaż fragment</summary><blockquote>{source.content}</blockquote></details>
+              </li>)}</ul>
+            </div>}
             {item.role === "assistant" && sources.length > 0 && <div className="message-sources">
               <strong>Źródła</strong>
               <ul>{sources.map(source => {
@@ -396,4 +408,6 @@ export default function Home({ initialMode = "chat" }: { initialMode?: Mode | "t
     </main>
   );
 }
+
+
 

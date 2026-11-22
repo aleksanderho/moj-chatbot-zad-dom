@@ -1,3 +1,4 @@
+import { knowledgeSources, parseKnowledgeSources } from "../app/knowledge-sources.ts";
 import "server-only";
 import { createHash, randomBytes } from "node:crypto";
 import type { UIMessage } from "ai";
@@ -46,13 +47,14 @@ export async function loadMessages(id: string): Promise<UIMessage[]> {
   // PostgREST ogranicza liczbę wierszy; pobieraj też dłuższe rozmowy.
   for (let offset = 0; ; offset += 500) {
     const { data, error } = await getSupabase().from("messages")
-      .select("id,role,content").eq("conversation_id", id)
+      .select("id,role,content,knowledge_sources").eq("conversation_id", id)
       .order("position", { ascending: true }).range(offset, offset + 499);
     if (error) throw new Error(storageError);
     for (const row of data ?? []) {
       if (row.role !== "user" && row.role !== "assistant") throw new Error(storageError);
       result.push({ id: row.id.startsWith(`${id}:`) ? row.id.slice(id.length + 1) : row.id,
-        role: row.role, parts: [{ type: "text", text: row.content }] });
+        role: row.role, parts: [{ type: "text", text: row.content }],
+        ...(row.role === "assistant" ? { metadata: { knowledgeSources: parseKnowledgeSources(row.knowledge_sources ?? []) } } : {}) });
     }
     if (!data || data.length < 500) return result;
   }
@@ -92,7 +94,8 @@ export async function saveTurn(id: string, user: UIMessage, assistant: UIMessage
   // Jeden atomowy INSERT obu wierszy. Stałe klucze chronią także przed ponowieniem żądania.
   const { error } = await getSupabase().from("messages").upsert([
     { id: `${id}:${user.id}`, conversation_id: id, role: "user", content: messageText(user) },
-    { id: `${id}:reply-${user.id}`, conversation_id: id, role: "assistant", content: messageText(assistant) },
+    { id: `${id}:reply-${user.id}`, conversation_id: id, role: "assistant", content: messageText(assistant), knowledge_sources: knowledgeSources(assistant.parts) },
   ], { onConflict: "id", ignoreDuplicates: true });
   if (error) throw new Error(storageError);
 }
+

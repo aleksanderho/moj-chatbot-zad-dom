@@ -13,8 +13,10 @@ export default defineConfig({
       SUPABASE_SECRET_KEY: "test-secret",
       OPENROUTER_API_KEY: "test-key",
       OPENROUTER_MODEL: "test/model",
+      OPENROUTER_EMBEDDING_MODEL: "openai/text-embedding-3-small",
       TRAVEL_SESSION_SECRET: "history-browser-test",
       NEXT_TELEMETRY_DISABLED: "1",
     },
   },
 });
+

@@ -1,44 +1,76 @@
 import { test, expect } from "@playwright/test";
 
-test("formularz: walidacja, sukces, błąd i układ mobilny", async ({ page, context }) => {
+test("lista, etapy, blokada wysyłki, potwierdzenia i błąd", async ({page,context})=>{
   await context.request.post("/api/travel/session");
-  let writes = 0;
-  await page.route("**/api/documents", async route => {
-    writes++;
-    const body = route.request().postDataJSON();
-    await route.fulfill({ status: writes === 1 ? 201 : 503, contentType: "application/json", body: JSON.stringify(writes === 1 ? { title:body.title, chunks:2 } : {error:"Nie udało się zapisać dokumentu. Spróbuj ponownie za chwilę."}) });
+  const document={id:10,title:"Cennik",created_at:"2026-11-22T10:00:00Z",chunks:2};
+  let documents=[document],deletes=0;
+  await page.route("**/api/documents",async route=>{
+    if(route.request().method()==="DELETE") {deletes++;documents=[];await route.fulfill({json:{ok:true}});return;}
+    await route.fulfill({json:{documents}});
+  });
+  await page.addInitScript(()=>{
+    const original=window.fetch;
+    window.fetch=async (url,options)=>{
+      if(String(url)==="/api/documents" && options?.method==="POST") {
+        const body=JSON.parse(options.body);
+        window.importBodies??=[];window.importBodies.push(body);
+        const encoder=new TextEncoder();
+        const stream=new ReadableStream({async start(controller){
+          for(const stage of ["split","embedding","save"]) {
+            controller.enqueue(encoder.encode(JSON.stringify({type:"progress",stage})+"\n"));
+            await new Promise(resolve=>setTimeout(resolve,500));
+            if(body.title==="Błąd" && stage==="embedding") {
+              controller.enqueue(encoder.encode(JSON.stringify({type:"error",stage,error:"Sprawdź saldo OpenRouter i spróbuj ponownie."})+"\n"));controller.close();return;
+            }
+          }
+          controller.enqueue(encoder.encode(JSON.stringify({type:"complete",title:body.title,chunks:2})+"\n"));controller.close();
+        }});
+        return new Response(stream,{headers:{"Content-Type":"application/x-ndjson"}});
+      }
+      return original(url,options);
+    };
   });
   await page.goto("/upload");
+  await expect(page.getByRole("heading",{name:"Cennik",exact:true})).toBeVisible();
+  await expect(page.getByText("Fragmenty: 2")).toBeVisible();
   await page.getByRole("button",{name:"Dodaj do bazy wiedzy"}).click();
   await expect(page.getByText("Wpisz tytuł dokumentu.")).toBeVisible();
-  await expect(page.getByText("Wklej treść dokumentu.", {exact:true})).toBeVisible();
-  expect(writes).toBe(0);
   await page.getByLabel("Tytuł",{exact:true}).fill("Cennik");
-  await page.getByLabel("Treść",{exact:true}).fill("Pierwszy akapit.\n\nDrugi akapit.");
+  await page.getByLabel("Treść",{exact:true}).fill("Nowa treść.");
+  page.once("dialog",dialog=>dialog.dismiss());
   await page.getByRole("button",{name:"Dodaj do bazy wiedzy"}).click();
-  await expect(page.getByRole("status")).toHaveText("Zapisano dokument „Cennik”: 2 fragmentów");
-  await page.getByLabel("Tytuł",{exact:true}).fill("Inny dokument");
-  await page.getByLabel("Treść",{exact:true}).fill("Treść do zachowania.");
+  expect(await page.evaluate(()=>window.importBodies?.length??0)).toBe(0);
+  page.once("dialog",dialog=>dialog.accept());
   await page.getByRole("button",{name:"Dodaj do bazy wiedzy"}).click();
-  await expect(page.locator("form").getByRole("alert")).toContainText("Nie udało się zapisać");
-  await expect(page.getByLabel("Treść",{exact:true})).toHaveValue("Treść do zachowania.");
-  await expect(page.getByLabel("Treść",{exact:true})).toHaveAttribute("maxlength","20000");
-  for (const width of [1440, 768, 390, 320]) {
-    await page.setViewportSize({width,height:900});
-    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-    await expect(page.getByRole("button",{name:"Dodaj do bazy wiedzy"})).toBeVisible();
+  for(const label of ["Dzielę tekst…","Tworzę embeddingi…","Zapisuję…"]) {
+    await expect(page.getByRole("status")).toHaveText(label);
+    await expect(page.getByRole("button",{name:"Operacja w toku…"})).toBeDisabled();
   }
-  await page.screenshot({path:"test-results/upload-mobile.png",fullPage:true});
-  await page.setViewportSize({width:1440,height:900});
-  await page.screenshot({path:"test-results/upload-desktop.png",fullPage:true});
-  await page.getByRole("link",{name:"Wróć do czatu"}).click();
-  await expect(page.getByRole("link",{name:"Baza wiedzy"})).toHaveAttribute("href","/upload");
+  await expect(page.getByRole("status")).toHaveText("Zapisano dokument „Cennik”: 2 fragmentów");
+  expect(await page.evaluate(()=>window.importBodies[0].expected)).toEqual([{id:10,created_at:document.created_at}]);
+  await page.getByLabel("Tytuł",{exact:true}).fill("Błąd");
+  await page.getByLabel("Treść",{exact:true}).fill("Zachowaj treść.");
+  await page.getByRole("button",{name:"Dodaj do bazy wiedzy"}).click();
+  await expect(page.locator("form").getByRole("alert")).toContainText("Etap: Tworzę embeddingi… Sprawdź saldo");
+  await expect(page.getByLabel("Treść",{exact:true})).toHaveValue("Zachowaj treść.");
+  await expect(page.getByRole("status")).toHaveCount(0);
+  for(const width of [1440,768,390,320]) {
+    await page.setViewportSize({width,height:900});
+    expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+  }
+  await page.screenshot({path:"test-results/upload-versions-mobile.png",fullPage:true});
+  page.once("dialog",dialog=>dialog.dismiss());
+  await page.getByRole("button",{name:"Usuń: Cennik"}).click();
+  expect(deletes).toBe(0);
+  page.once("dialog",dialog=>dialog.accept());
+  await page.getByRole("button",{name:"Usuń: Cennik"}).click();
+  await expect(page.getByText("Nie dodano jeszcze dokumentów.")).toBeVisible();
+  expect(deletes).toBe(1);
 });
 
-test("bez sesji: przekierowanie strony i 401 endpointu", async ({page,request}) => {
-  await page.goto("/upload");
-  await expect(page).toHaveURL(/session=expired/);
+test("brak sesji chroni stronę i wszystkie operacje",async({page,request})=>{
+  await page.goto("/upload");await expect(page).toHaveURL(/session=expired/);
+  expect((await request.get("/api/documents")).status()).toBe(401);
   expect((await request.post("/api/documents",{data:{title:"X",text:"Y"}})).status()).toBe(401);
+  expect((await request.delete("/api/documents",{data:{id:10}})).status()).toBe(401);
 });
-
-

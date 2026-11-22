@@ -1,3 +1,4 @@
+import { createSearchKnowledgeTool } from "../../../lib/search-knowledge.ts";
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import { APICallError, convertToModelMessages, createUIMessageStream, createUIMessageStreamResponse, streamText, stepCountIs } from "ai";
 import { chatOwner, openConversation, loadMessages, messageText, saveTurn, storageError } from "../../../lib/chat-store.ts";
@@ -8,7 +9,6 @@ import { createTaskBudget } from "./task-budget.mjs";
 import { randomUUID } from "node:crypto";
 import { createTools, STEP_LIMIT } from "./tools.mjs";
 import { z } from "zod";
-import { exampleMessages } from "./chat-instructions.mjs";
 import { systemPrompt } from "./instructions.mjs";
 import { imagePartSchema } from "./image-input.mjs";
 import { createImageTool } from "../agent/image-tool.mjs";
@@ -99,7 +99,7 @@ export async function handleChat(request: Request, body: unknown) {
       return createUIMessageStreamResponse({
         headers: { "Cache-Control": "no-store", "Set-Cookie": persistenceOwner.cookie },
         stream: createUIMessageStream({ execute: ({ writer }) => {
-          writer.write({ type: "start", messageId: savedReply.id });
+          writer.write({ type: "start", messageId: savedReply.id, messageMetadata: savedReply.metadata });
           writer.write({ type: "text-start", id: "replay" });
           writer.write({ type: "text-delta", id: "replay", delta: messageText(savedReply) });
           writer.write({ type: "text-end", id: "replay" });
@@ -119,6 +119,7 @@ export async function handleChat(request: Request, body: unknown) {
     const budget = createTaskBudget({ signal: request.signal, timeoutMs: Math.max(1, 60000 - (performance.now() - started)) });
     const tools = {
       ...createTools({ model, owner, signal: budget.signal, budget }),
+      searchKnowledge: createSearchKnowledgeTool(request, budget),
       webSearch: openrouter.tools.webSearch({ maxResults: 3, engine: "native" }),
       generujObraz: createImageTool({ apiKey, signal: budget.signal, budget }),
       zapiszProfil: createProfileTool(request, lastMessage.parts.filter(part => part.type === "text").map(part => part.text).join("\n"), budget),
@@ -140,7 +141,7 @@ export async function handleChat(request: Request, body: unknown) {
         const pendingLocal = toolCalls.filter(call => !call.providerExecuted && !toolResults.some(result => result.toolCallId === call.toolCallId));
         if (pendingLocal.length > 0 && !budget.reason) budget.fail("Nie udało się poprawnie wykonać wywołania narzędzia.");
       },
-      messages: [...exampleMessages, ...await convertToModelMessages(messages)],
+      messages: await convertToModelMessages(messages),
       // Read the actual API model field, never substitute the configured model ID.
       includeRawChunks: true,
       abortSignal: budget.signal,
@@ -205,3 +206,5 @@ export async function handleChat(request: Request, body: unknown) {
     return new Response(providerErrorMessage(error), { status: 500 });
   }
 }
+
+

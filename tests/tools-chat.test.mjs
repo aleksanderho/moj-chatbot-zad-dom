@@ -2,18 +2,51 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { Chat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
-import { chatPOST as POST } from "./agent-fixtures.mjs";
+import { POST as agentPOST } from "../app/api/agent/route.ts";
+import { issueSession } from "../app/travel-session.mjs";
+import { randomUUID } from "node:crypto";
+
+const conversationIds = new Map();
+async function POST(request) {
+  const body = await request.json();
+  // AI SDK utrzymuje id czatu między wiadomościami; serwer wymaga osobnego UUID.
+  const chatId = body.id ?? randomUUID();
+  if (!conversationIds.has(chatId)) conversationIds.set(chatId, randomUUID());
+  return agentPOST(new Request(request.url, {
+    method: "POST", signal: request.signal,
+    headers: { cookie: `travel_session=${issueSession()}; chat_owner=${"a".repeat(64)}` },
+    body: JSON.stringify({ ...body, mode: "chat", conversationId: conversationIds.get(chatId) }),
+  }));
+}
 
 test("narzędzia w strumieniu, wynik dla modelu, kolejna wiadomość i limit 5 kroków", async () => {
   process.env.OPENROUTER_API_KEY = "test-key";
   process.env.OPENROUTER_MODEL = "test/model";
+  process.env.SUPABASE_URL = "https://database.example.test";
+  process.env.SUPABASE_SECRET_KEY = "test-secret";
+  const conversations = [];
+  const messages = [];
   const previous = globalThis.fetch;
   let calls = 0;
   let repeat = false;
   let batch = false;
   let failTool = false;
   const bodies = [];
-  globalThis.fetch = async (_url, options) => {
+  globalThis.fetch = async (_url, options = {}) => {
+    const url = new URL(typeof _url === "string" ? _url : _url.url ?? String(_url));
+    if (url.hostname === "database.example.test") {
+      const table = url.pathname.split("/").at(-1);
+      if (table === "user_profiles") return Response.json({ id: 1, name: null, preferences: {} });
+      const records = table === "conversations" ? conversations : messages;
+      if (options.method === "POST") {
+        const body = JSON.parse(options.body);
+        for (const row of Array.isArray(body) ? body : [body]) records.push({ ...row, position: records.length + 1 });
+        return new Response(null, { status: 201 });
+      }
+      const selected = records.filter(row => [...url.searchParams].every(([key, value]) => !value.startsWith("eq.") || String(row[key]) === value.slice(3)));
+      return Response.json(table === "conversations" ? selected[0] ?? null : selected);
+    }
+    assert.equal(url.hostname, "openrouter.ai");
     const body = JSON.parse(options.body);
     bodies.push(body);
     calls++;
@@ -80,3 +113,4 @@ test("narzędzia w strumieniu, wynik dla modelu, kolejna wiadomość i limit 5 k
     assert.ok(failedChat.messages[1].parts.some(p => p.type === "text" && p.text.includes("wynikiem częściowym") && p.text.includes("Nie można dzielić przez zero")));
   } finally { globalThis.fetch = previous; }
 });
+

@@ -1,6 +1,7 @@
+import type { KnowledgeSource } from "./knowledge-sources.ts";
 import { isToolUIPart, type UIMessage } from "ai";
 
-export type AgentMetadata = { steps: number; toolCalls: number; elapsedMs: number; interrupted?: boolean; sourcesFetchedAt?: Record<string, string>; modelId?: string; vision?: boolean; generatedImage?: boolean };
+export type AgentMetadata = { knowledgeSources?: KnowledgeSource[]; steps: number; toolCalls: number; elapsedMs: number; interrupted?: boolean; sourcesFetchedAt?: Record<string, string>; modelId?: string; vision?: boolean; generatedImage?: boolean };
 export type AgentMessage = UIMessage<AgentMetadata>;
 
 // Called only after SDK stop() has drained the stream, so no late chunk overwrites the note.
@@ -27,3 +28,4 @@ export function markInterrupted(messages: AgentMessage[], elapsedMs: number): Ag
   };
   return last?.role === "assistant" ? [...messages.slice(0, -1), updated] : [...messages, updated];
 }
+
