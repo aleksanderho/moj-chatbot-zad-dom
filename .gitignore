@@ -10,3 +10,5 @@ out/
 *.p12
 *.pfx
 *.log
+test-results/
+playwright-report/

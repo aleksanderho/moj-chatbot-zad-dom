@@ -43,6 +43,7 @@ async function startSession(signal?: AbortSignal) {
 }
 
 function errorMessage(error: Error) {
+  if (error.message.startsWith("Nie udało się odczytać lub zapisać rozmowy.")) return error.message;
   if (/^OpenRouter \((400|401|402|403|404|408\/504|429|502\/503)\):/.test(error.message)) return error.message;
   if (error.message.startsWith("Brak konfiguracji.")) return "Brak konfiguracji. Uzupełnij OPENROUTER_API_KEY i OPENROUTER_MODEL w pliku .env.local.";
   if (error.message === "Nieprawidłowa historia rozmowy." || error.message === "Wpisz wiadomość przed wysłaniem.") return error.message;
@@ -53,6 +54,51 @@ function errorMessage(error: Error) {
 export function ChatPanel({ mode, active }: { mode: Mode; active: boolean }) {
   const [message, setMessage] = useState("");
   const { messages, sendMessage, status, error, regenerate, stop, setMessages } = useChat<AgentMessage>({ transport });
+  const [conversationId, setConversationId] = useState("");
+  const [loadingHistory, setLoadingHistory] = useState(true);
+  const [historyError, setHistoryError] = useState("");
+  const [profileName, setProfileName] = useState<string | null>(null);
+  useEffect(() => {
+    const controller = new AbortController();
+    void (async () => {
+      try {
+        await startSession(controller.signal);
+        const profileResponse = await fetch("/api/profile", { signal: controller.signal, cache: "no-store" });
+        if (!profileResponse.ok) throw new Error("profile");
+        const { profile } = await profileResponse.json();
+        if (controller.signal.aborted) return;
+        setProfileName(profile.name);
+        const query = new URLSearchParams(window.location.search);
+        const requestedId = query.get("conversation");
+        const newChat = query.get("new") === "1";
+        const response = await fetch(requestedId ? `/api/conversations?id=${encodeURIComponent(requestedId)}` : "/api/conversations", { signal: controller.signal, cache: "no-store" });
+        if (!response.ok && !(newChat && response.status === 404)) throw new Error("history");
+        const { conversation } = response.ok ? await response.json() : { conversation: null };
+        if (controller.signal.aborted) return;
+        if (newChat && (!requestedId || !conversation)) {
+          const id = requestedId ?? crypto.randomUUID();
+          setConversationId(id);
+          setMessages([]);
+          window.history.replaceState(null, "", `/?conversation=${id}&new=1`);
+        } else {
+          const id = conversation?.id ?? crypto.randomUUID();
+          setConversationId(id);
+          setMessages(conversation?.messages ?? []);
+          window.history.replaceState(null, "", `/?conversation=${id}${conversation ? "" : "&new=1"}`);
+        }
+      } catch {
+        if (!controller.signal.aborted) setHistoryError("Nie udało się wczytać rozmowy. Odśwież stronę, aby spróbować ponownie.");
+      } finally {
+        if (!controller.signal.aborted) setLoadingHistory(false);
+      }
+    })();
+    return () => controller.abort();
+  }, [setMessages]);
+
+  function newConversation() {
+    if (busy || stopping || sendLock.current) return;
+    window.location.assign("/?new=1");
+  }
   const [stopping, setStopping] = useState(false);
   const [photo, setPhoto] = useState<FileUIPart | null>(null);
   const [readingPhoto, setReadingPhoto] = useState(false);
@@ -66,7 +112,7 @@ export function ChatPanel({ mode, active }: { mode: Mode; active: boolean }) {
   useEffect(() => () => { sessionRequest.current?.abort(); photoReader.current?.abort(); }, []);
   const startedAt = useRef(0);
   const chatBusy = status === "submitted" || status === "streaming";
-  const busy = chatBusy || preparingSession || readingPhoto;
+  const busy = chatBusy || preparingSession || readingPhoto || loadingHistory || Boolean(historyError);
   const generating = (chatBusy || preparingSession) && (imageRequested || Boolean(messages.at(-1)?.parts.some(part => isToolUIPart(part) && getToolName(part) === "generujObraz" && (part.state === "input-streaming" || part.state === "input-available"))));
 
   async function submitChat(text: string, files: FileUIPart[] = [], generateImage = false, retry = false) {
@@ -80,11 +126,11 @@ export function ChatPanel({ mode, active }: { mode: Mode; active: boolean }) {
       controller.signal.throwIfAborted();
       startedAt.current = performance.now();
       setPreparingSession(false);
-      if (retry) await regenerate({ body: { mode: "chat", generateImage } });
+      if (retry) await regenerate({ body: { mode: "chat", generateImage, conversationId } });
       else {
         setMessage(""); setPhoto(null);
         if (fileInput.current) fileInput.current.value = "";
-        await sendMessage({ text: generateImage ? `Wygeneruj obraz: ${text}` : text, ...(files.length ? { files } : {}) }, { body: { mode: "chat", generateImage } });
+        await sendMessage({ text: generateImage ? `Wygeneruj obraz: ${text}` : text, ...(files.length ? { files } : {}) }, { body: { mode: "chat", generateImage, conversationId } });
       }
     } catch (failure) {
       if (!controller.signal.aborted) setMediaError(failure instanceof Error ? failure.message : "Nie udało się wysłać wiadomości.");
@@ -150,8 +196,11 @@ export function ChatPanel({ mode, active }: { mode: Mode; active: boolean }) {
 
   return (
     <section id={`panel-${mode}`} role="tabpanel" aria-labelledby={`tab-${mode}`} hidden={!active}>
+      <div className="media-actions chat-navigation"><button type="button" disabled={busy || stopping} onClick={newConversation}>Nowa rozmowa</button><a className="history-back" href="/history">Historia</a><a className="history-back" href="/profile">Profil</a></div>
+      {loadingHistory && <p role="status">Wczytuję rozmowę…</p>}
+      {historyError && <div className="error" role="alert">{historyError}</div>}
       <div className="conversation" role="log" aria-label={mode === "chat" ? "Rozmowa" : "Analiza JSON"} aria-live="polite" tabIndex={0}>
-        {messages.length === 0 && <div className="welcome"><span className="welcome-mark" aria-hidden="true">i.</span><p className="eyebrow">Twój asystent i-sofa</p><h2>Porozmawiajmy o wygodzie.</h2><p>Zapytaj o sofy, wybór mebli lub ofertę sklepu.<br />W czym mogę Ci dzisiaj pomóc?</p></div>}
+        {messages.length === 0 && !loadingHistory && !historyError && <div className="welcome"><span className="welcome-mark" aria-hidden="true">i.</span><p className="eyebrow">Twój asystent i-sofa</p><h2>{profileName ? `Cześć, ${profileName}!` : "Cześć!"}</h2><p>{profileName ? "W czym mogę Ci dzisiaj pomóc?" : "Jak mam się do Ciebie zwracać?"}</p></div>}
         {messages.map((item) => {
           const sources = item.parts.filter(part => part.type === "source-url" && /^https?:\/\//i.test(part.url));
           const usedTools = usedToolLabels(item.parts);
@@ -200,7 +249,7 @@ export function ChatPanel({ mode, active }: { mode: Mode; active: boolean }) {
           </div>
         ); })}
       </div>
-      {busy && <p className="typing" role="status"><span aria-hidden="true" />{generating ? "Generuję obraz…" : readingPhoto ? "Wczytuję zdjęcie…" : status === "submitted" ? "Czekam na odpowiedź…" : "Agent pisze…"}</p>}
+      {busy && !loadingHistory && !historyError && <p className="typing" role="status"><span aria-hidden="true" />{generating ? "Generuję obraz…" : readingPhoto ? "Wczytuję zdjęcie…" : status === "submitted" ? "Czekam na odpowiedź…" : "Agent pisze…"}</p>}
       {mediaError && <div className="error" role="alert">{mediaError}</div>}
       {error && (
         <div className="error" role="alert">
@@ -219,7 +268,7 @@ export function ChatPanel({ mode, active }: { mode: Mode; active: boolean }) {
         <label className="sr-only" htmlFor={`message-${mode}`}>Wiadomość klienta</label>
         <div className="input-row">
           <input id={`message-${mode}`} value={message} onChange={(event) => setMessage(event.target.value)} placeholder="Napisz wiadomość…" autoComplete="off" disabled={busy} />
-          {busy || stopping
+          {loadingHistory || historyError ? <button type="submit" disabled>Wyślij</button> : busy || stopping
             ? <button type="button" disabled={stopping} onClick={() => { void handleStop(); }}>{stopping ? "Zatrzymuję…" : "Stop"}</button>
             : <button type="submit" disabled={!message.trim() && !photo}>Wyślij</button>}
         </div>

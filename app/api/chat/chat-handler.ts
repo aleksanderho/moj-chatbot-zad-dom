@@ -1,5 +1,8 @@
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
-import { APICallError, convertToModelMessages, createUIMessageStreamResponse, streamText, stepCountIs } from "ai";
+import { APICallError, convertToModelMessages, createUIMessageStream, createUIMessageStreamResponse, streamText, stepCountIs } from "ai";
+import { chatOwner, openConversation, loadMessages, messageText, saveTurn, storageError } from "../../../lib/chat-store.ts";
+import { validSession } from "../../travel-session.mjs";
+import { loadProfile, profileInstruction, createProfileTool } from "../../../lib/user-profile.ts";
 import { withLimitSummary } from "./agent-loop.mjs";
 import { createTaskBudget } from "./task-budget.mjs";
 import { randomUUID } from "node:crypto";
@@ -43,11 +46,12 @@ function providerErrorMessage(error: unknown): string {
 const textPartSchema = z.object({ type: z.literal("text"), text: z.string() });
 type InputPart = z.infer<typeof textPartSchema> | z.infer<typeof imagePartSchema>;
 const requestSchema = z.object({
+  conversationId: z.string().uuid(),
   stepByStep: z.boolean().default(false),
   mode: z.literal("chat"),
   generateImage: z.boolean().default(false),
   messages: z.array(z.object({
-    id: z.string().min(1),
+    id: z.string().min(1).max(200).regex(/^[a-zA-Z0-9_-]+$/),
     role: z.enum(["user", "assistant"]),
     parts: z.array(z.union([
       textPartSchema,
@@ -60,6 +64,7 @@ const requestSchema = z.object({
 });
 
 export async function handleChat(request: Request, body: unknown) {
+  if (!validSession(request)) return new Response("Sesja wygasła. Rozpocznij rozmowę ponownie.", { status: 401 });
   const started = performance.now();
   const apiKey = process.env.OPENROUTER_API_KEY?.trim();
   const model = process.env.OPENROUTER_MODEL?.trim();
@@ -75,10 +80,36 @@ export async function handleChat(request: Request, body: unknown) {
   if (!parsed.success) {
     return new Response("Nieprawidłowa historia rozmowy.", { status: 400 });
   }
-  const messages = parsed.data.messages;
-  const lastMessage = messages.at(-1)!;
+  const lastMessage = parsed.data.messages.at(-1)!;
+  if (lastMessage.id.startsWith("reply-")) return new Response("Nieprawidłowa historia rozmowy.", { status: 400 });
   if (lastMessage.role !== "user" || !lastMessage.parts.some((part) => part.type === "file" || part.text.trim())) {
     return new Response("Wpisz wiadomość przed wysłaniem.", { status: 400 });
+  }
+
+  const conversationId = parsed.data.conversationId;
+  const persistenceOwner = chatOwner(request);
+  let messages;
+  let profile;
+  try {
+    profile = await loadProfile();
+    await openConversation(conversationId, persistenceOwner.id, messageText(lastMessage));
+    const history = await loadMessages(conversationId);
+    const savedReply = history.find(message => message.id === `reply-${lastMessage.id}`);
+    if (savedReply) {
+      return createUIMessageStreamResponse({
+        headers: { "Cache-Control": "no-store", "Set-Cookie": persistenceOwner.cookie },
+        stream: createUIMessageStream({ execute: ({ writer }) => {
+          writer.write({ type: "start", messageId: savedReply.id });
+          writer.write({ type: "text-start", id: "replay" });
+          writer.write({ type: "text-delta", id: "replay", delta: messageText(savedReply) });
+          writer.write({ type: "text-end", id: "replay" });
+          writer.write({ type: "finish", finishReason: "stop" });
+        } }),
+      });
+    }
+    messages = [...history, lastMessage];
+  } catch {
+    return new Response(storageError, { status: 503 });
   }
 
   try {
@@ -90,17 +121,20 @@ export async function handleChat(request: Request, body: unknown) {
       ...createTools({ model, owner, signal: budget.signal, budget }),
       webSearch: openrouter.tools.webSearch({ maxResults: 3, engine: "native" }),
       generujObraz: createImageTool({ apiKey, signal: budget.signal, budget }),
+      zapiszProfil: createProfileTool(request, lastMessage.parts.filter(part => part.type === "text").map(part => part.text).join("\n"), budget),
     };
     const result = streamText({
       model: openrouter(model),
-      system: systemPrompt(parsed.data.stepByStep),
+      system: systemPrompt(parsed.data.stepByStep) + "\n\n" + profileInstruction(profile),
       tools,
       stopWhen: [stepCountIs(STEP_LIMIT), () => Boolean(budget.reason)],
-      prepareStep: ({ stepNumber }) => {
+      prepareStep: async ({ stepNumber }) => {
         budget.steps++;
-        return parsed.data.generateImage && stepNumber === 0
-          ? { toolChoice: { type: "tool" as const, toolName: "generujObraz" as const } }
-          : {};
+        const currentProfile = stepNumber === 0 ? profile : await loadProfile();
+        return {
+          system: systemPrompt(parsed.data.stepByStep) + "\n\n" + profileInstruction(currentProfile),
+          ...(parsed.data.generateImage && stepNumber === 0 ? { toolChoice: { type: "tool" as const, toolName: "generujObraz" as const } } : {}),
+        };
       },
       onStepFinish: ({ toolResults, toolCalls }) => {
         const pendingLocal = toolCalls.filter(call => !call.providerExecuted && !toolResults.some(result => result.toolCallId === call.toolCallId));
@@ -115,9 +149,16 @@ export async function handleChat(request: Request, body: unknown) {
       onError: () => {},
     });
 
-    return createUIMessageStreamResponse({
-      headers: existingOwner ? {} : { "Set-Cookie": `chat_notes=${owner}; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400${new URL(request.url).protocol === "https:" ? "; Secure" : ""}` },
-      stream: result.toUIMessageStream({
+    const headers = new Headers({ "Cache-Control": "no-store" });
+    headers.append("Set-Cookie", persistenceOwner.cookie);
+    if (!existingOwner) headers.append("Set-Cookie", `chat_notes=${owner}; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400${new URL(request.url).protocol === "https:" ? "; Secure" : ""}`);
+    let failed = false;
+    const stream = createUIMessageStream({
+      originalMessages: messages,
+      generateId: () => `reply-${lastMessage.id}`,
+      execute: ({ writer }) => {
+        writer.merge(result.toUIMessageStream({
+        generateMessageId: () => `reply-${lastMessage.id}`,
         sendSources: true,
         sendReasoning: false,
         messageMetadata: ({ part }) => {
@@ -129,9 +170,37 @@ export async function handleChat(request: Request, body: unknown) {
             vision: messages.some(message => message.role === "user" && message.parts.some(part => part.type === "file")),
           };
         },
-        onError: providerErrorMessage,
-      }).pipeThrough(withLimitSummary(budget)),
+        onError: error => { failed = true; return providerErrorMessage(error); },
+      }).pipeThrough(withLimitSummary(budget)));
+      },
+      onFinish: async ({ responseMessage, isAborted, outcome, finishReason }) => {
+        if (finishReason && outcome.status !== "failed" && !isAborted && !failed && !request.signal.aborted) await saveTurn(conversationId, lastMessage, responseMessage);
+      },
+      onError: () => storageError,
     });
+    // Dopiero po onFinish (i zapisie w bazie) przekaż zakończenie do przeglądarki.
+    const reader = stream.getReader();
+    let cancelled = false;
+    const persistedStream = new ReadableStream({
+      async start(controller) {
+        let finish;
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            if (value.type === "finish") finish = value;
+            else controller.enqueue(value);
+          }
+          if (finish && !cancelled) controller.enqueue(finish);
+        } catch {
+          if (!cancelled) controller.enqueue({ type: "error", errorText: storageError });
+        } finally {
+          if (!cancelled) controller.close();
+        }
+      },
+      cancel: () => { cancelled = true; return reader.cancel(); },
+    });
+    return createUIMessageStreamResponse({ headers, stream: persistedStream });
   } catch (error) {
     return new Response(providerErrorMessage(error), { status: 500 });
   }
