@@ -59,3 +59,12 @@ test("instrukcja wymaga źródeł i zakazuje uzupełniania faktów o firmie",()=
   assert.match(prompt,/Fragment na podobny temat to jeszcze nie odpowiedź/);
   assert.ok(!prompt.includes("BLIK, Przelewy24"));
 });
+
+test("ogólne pytanie o cenę wymaga podania znalezionych modeli, wariantów i źródeł",()=>{
+ const prompt=systemPrompt();
+ assert.match(prompt,/Jaka jest cena sofy/);
+ assert.match(prompt,/wymień znalezione modele oraz ceny i warianty/);
+ assert.match(prompt,/nie ograniczaj odpowiedzi do prośby o model/);
+ assert.match(prompt,/nie przedstawiaj ceny narożnika jako ceny sofy/);
+ assert.match(prompt,/Nie dopisuj modeli, konfiguracji ani kwot/);
+});
