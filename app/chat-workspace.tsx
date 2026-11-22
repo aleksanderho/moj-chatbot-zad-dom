@@ -196,7 +196,7 @@ export function ChatPanel({ mode, active }: { mode: Mode; active: boolean }) {
 
   return (
     <section id={`panel-${mode}`} role="tabpanel" aria-labelledby={`tab-${mode}`} hidden={!active}>
-      <div className="media-actions chat-navigation"><button type="button" disabled={busy || stopping} onClick={newConversation}>Nowa rozmowa</button><a className="history-back" href="/history">Historia</a><a className="history-back" href="/profile">Profil</a></div>
+      <div className="media-actions chat-navigation"><button type="button" disabled={busy || stopping} onClick={newConversation}>Nowa rozmowa</button><a className="history-back" href="/history">Historia</a><a className="history-back" href="/profile">Profil</a><a className="history-back" href="/upload">Baza wiedzy</a></div>
       {loadingHistory && <p role="status">Wczytuję rozmowę…</p>}
       {historyError && <div className="error" role="alert">{historyError}</div>}
       <div className="conversation" role="log" aria-label={mode === "chat" ? "Rozmowa" : "Analiza JSON"} aria-live="polite" tabIndex={0}>
@@ -396,3 +396,4 @@ export default function Home({ initialMode = "chat" }: { initialMode?: Mode | "t
     </main>
   );
 }
+

@@ -188,3 +188,15 @@ a { color: #66503e; text-underline-offset: 4px; }
 .comparison-evidence li + li { margin-top: 8px; }
 @media (max-width: 1000px) { .compare-form { grid-template-columns: 1fr 1fr; } }
 @media (max-width: 600px) { .compare-form { grid-template-columns: 1fr; } .trip-comparison { grid-template-columns: 1fr; } }
+.upload-shell { height: auto; min-height: 100dvh; padding-bottom: 40px; }
+.upload-form { display: grid; gap: 24px; padding-top: 16px; }
+.upload-form > .hint { margin: 0; }
+.upload-form label { display: block; margin-bottom: 8px; font-weight: 600; }
+.upload-form input, .upload-form textarea { border: 1px solid #c5beb6; }
+.upload-form textarea { min-height: 320px; max-height: none; }
+.upload-form [aria-invalid="true"] { border-color: #8a3026; }
+.upload-count { margin: 6px 0 0; color: var(--muted); font-size: 14px; text-align: right; }
+.upload-field-error { margin: 6px 0 0; color: #8a3026; font-size: 14px; }
+.upload-success { margin: 0; padding: 16px; border: 1px solid #9bb9a4; border-radius: 12px; color: #285839; background: #f4faf5; overflow-wrap: anywhere; }
+.upload-form > button { justify-self: start; }
+@media (max-width: 500px) { .upload-form > button { width: 100%; } }
